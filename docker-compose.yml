@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  ui:
+    build: 
+      context: ./ui
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+
+  api-gateway:
+    build: 
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - REDIS_URL=redis://redis-queue:6379
+      - DB_URL=postgres://user:pass@postgres-db:5432/videodb
+    depends_on:
+      - redis-queue
+      - postgres-db
+
+  redis-queue:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  video-render-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis-queue:6379
+      - DB_URL=postgres://user:pass@postgres-db:5432/videodb
+      - API_URL=http://api-gateway:3000
+    depends_on:
+      - redis-queue
+
+  postgres-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=videodb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  redis_data:
+  pg_data:
