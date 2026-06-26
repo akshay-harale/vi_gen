@@ -17,24 +17,42 @@ class BaseVideoGenerator:
 class PoCVideoGenerator(BaseVideoGenerator):
     def generate(self, script: str, output_path: str):
         # We import moviepy here to avoid issues if it fails to load early
-        from moviepy.editor import TextClip, ColorClip, CompositeVideoClip
+        from moviepy.editor import TextClip, ColorClip, CompositeVideoClip, AudioFileClip
         import textwrap
 
+        job_id = os.path.basename(output_path).replace(".mp4", "")
         print(f"Generating PoC video at {output_path}")
         
-        # Simple text wrapping for the video
-        # Truncate to 500 characters so ImageMagick doesn't crash on huge scripts
-        safe_script = script[:500] + ("..." if len(script) > 500 else "")
-        wrapped_text = "\n".join(textwrap.wrap(safe_script, width=40))
+        # Wrap text to ~45 chars so it fits nicely
+        safe_script = script[:2000] + ("..." if len(script) > 2000 else "")
+        wrapped_text = "\n".join(textwrap.wrap(safe_script, width=45))
         
-        # We use a simple blue background with white text
-        # If ImageMagick is not available, TextClip might fail, so we use a try-except
+        # Generate Audio via Piper TTS
+        audio_path = f"/app/output/{job_id}.wav"
+        print("Generating TTS audio with Piper...")
+        subprocess.run(
+            ["piper", "--model", "/app/voice.onnx", "--output_file", audio_path],
+            input=safe_script.encode("utf-8")
+        )
+        
         try:
-            txt_clip = TextClip(wrapped_text, fontsize=30, color='white', size=(1280, 720), method='caption', align='center')
-            bg_clip = ColorClip(size=(1280, 720), color=(0, 0, 139), duration=5)
-            txt_clip = txt_clip.set_duration(5).set_position('center')
-            video = CompositeVideoClip([bg_clip, txt_clip])
-            video.write_videofile(output_path, fps=24, codec="libx264", audio=False)
+            audio_clip = AudioFileClip(audio_path)
+            duration = audio_clip.duration
+            
+            # Create text clip without a fixed height so it can be as tall as needed
+            txt_clip = TextClip(wrapped_text, fontsize=35, color='white', align='center')
+            
+            bg_clip = ColorClip(size=(1280, 720), color=(0, 0, 139), duration=duration)
+            
+            # Scroll from bottom to top over the exact duration of the audio
+            def get_pos(t):
+                progress = t / duration
+                y = 720 - progress * (720 + txt_clip.h)
+                return 'center', y
+                
+            txt_clip = txt_clip.set_position(get_pos).set_duration(duration)
+            video = CompositeVideoClip([bg_clip, txt_clip]).set_audio(audio_clip)
+            video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
         except Exception as e:
             print(f"MoviePy error (often ImageMagick related): {e}")
             # Fallback if ImageMagick is not installed
