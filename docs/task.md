@@ -9,7 +9,7 @@
   - `[x]` Implement API -> Redis job queueing (mock data)
   - `[x]` Implement Worker Redis polling and mock processing
   - `[ ]` Run end-to-end and test pipeline
-- `[ ]` Sprint 2: Database & State Management
+- `[x]` Sprint 2: Database & State Management
 - `[ ]` Sprint 3: LLM Integration (Ollama)
 - `[ ]` Sprint 4: Video Generation (GPU)
 - `[ ]` Sprint 5: UI Polish & Polish Features
