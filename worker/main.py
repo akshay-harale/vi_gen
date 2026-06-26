@@ -55,9 +55,16 @@ class PoCVideoGenerator(BaseVideoGenerator):
             video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
         except Exception as e:
             print(f"MoviePy error (often ImageMagick related): {e}")
-            # Fallback if ImageMagick is not installed
-            bg_clip = ColorClip(size=(1280, 720), color=(0, 0, 139), duration=5)
-            bg_clip.write_videofile(output_path, fps=24, codec="libx264", audio=False)
+            # Fallback if ImageMagick is not installed or fails
+            try:
+                audio_clip = AudioFileClip(audio_path)
+                fallback_duration = audio_clip.duration
+                bg_clip = ColorClip(size=(1280, 720), color=(0, 0, 139), duration=fallback_duration).set_audio(audio_clip)
+                bg_clip.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+            except Exception as inner_e:
+                print(f"Fallback audio failed: {inner_e}")
+                bg_clip = ColorClip(size=(1280, 720), color=(0, 0, 139), duration=5)
+                bg_clip.write_videofile(output_path, fps=24, codec="libx264", audio=False)
 
 
 def get_db_connection():
