@@ -24,7 +24,7 @@ class PoCVideoGenerator(BaseVideoGenerator):
         print(f"Generating PoC video at {output_path}")
         
         # Wrap text to ~45 chars so it fits nicely
-        safe_script = script[:2000] + ("..." if len(script) > 2000 else "")
+        safe_script = script[:1000] + ("..." if len(script) > 1000 else "")
         wrapped_text = "\n".join(textwrap.wrap(safe_script, width=45))
         
         # Generate Audio via Piper TTS
