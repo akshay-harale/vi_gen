@@ -45,7 +45,7 @@ services:
       - LLM_PROVIDER=together
       - LLM_MODEL=google/gemma-4-31B-it
       - OPENAI_API_KEY=
-      - TOGETHER_API_KEY=tgp_v1_v2If9d2L8vBCqJ7nzLB-FqE1gsvRjHr-Q2mtzkCqiHE
+      - TOGETHER_API_KEY=
     depends_on:
       - redis-queue
     volumes:
