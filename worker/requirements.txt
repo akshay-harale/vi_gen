@@ -2,5 +2,11 @@ redis==5.0.4
 psycopg2-binary==2.9.9
 requests==2.31.0
 python-dotenv==1.0.1
+langgraph
+langchain-core
+together==1.2.3
 moviepy==1.0.3
-piper-tts==1.2.0
+kokoro>=0.9.4
+soundfile
+torch
+numpy

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   ui:
-    build: 
+    build:
       context: ./ui
       dockerfile: Dockerfile
     ports:
@@ -11,7 +11,7 @@ services:
       - VITE_API_URL=http://localhost:3000
 
   api-gateway:
-    build: 
+    build:
       context: ./api
       dockerfile: Dockerfile
     ports:
@@ -43,6 +43,7 @@ services:
       - API_URL=http://api-gateway:3000
       - OLLAMA_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=qwen3:8b
+      - TOGETHER_API_KEY=tgp_v1_KYBELjJyv8rkqoUuH73RTWp5i0WEgb00TKHsLR1KupE
     depends_on:
       - redis-queue
     volumes:
