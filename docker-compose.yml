@@ -42,8 +42,10 @@ services:
       - DB_URL=postgres://user:pass@postgres-db:5432/videodb
       - API_URL=http://api-gateway:3000
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=qwen3:8b
-      - TOGETHER_API_KEY=tgp_v1_KYBELjJyv8rkqoUuH73RTWp5i0WEgb00TKHsLR1KupE
+      - LLM_PROVIDER=together
+      - LLM_MODEL=google/gemma-4-31B-it
+      - OPENAI_API_KEY=
+      - TOGETHER_API_KEY=tgp_v1_v2If9d2L8vBCqJ7nzLB-FqE1gsvRjHr-Q2mtzkCqiHE
     depends_on:
       - redis-queue
     volumes:

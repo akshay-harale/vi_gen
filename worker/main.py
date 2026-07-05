@@ -13,7 +13,9 @@ from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_URL = os.getenv("DB_URL", "postgres://user:pass@localhost:5432/videodb")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 API_URL = os.getenv("API_URL", "http://localhost:3000")
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 
@@ -27,32 +29,64 @@ class WorkflowState(TypedDict):
     error: str
 
 def generate_script_segments(state: WorkflowState) -> WorkflowState:
-    print(f"[Node: Script] Generating script for {state['job_id']}")
+    print(f"[Node: Script] Generating script for {state['job_id']} using {LLM_PROVIDER} ({LLM_MODEL})")
     system_prompt = (
         "You are an expert video script writer. "
         "Create a comprehensive, highly detailed script for a video about the user's prompt. "
         "You MUST output exactly 4 to 5 segments. "
-        "Return ONLY a JSON array containing 4 to 5 objects. Each object must have exactly two keys: "
+        "Return ONLY a JSON object with a single key 'segments' containing an array of 4 to 5 objects. Each object must have exactly two keys: "
         "'text' (the spoken voiceover, which should be long and detailed) and 'image_prompt' (a visual description to generate an image). "
         "Example format:\n"
-        "[\n"
-        "  {\"text\": \"First long segment explaining the introduction...\", \"image_prompt\": \"Visual for intro\"},\n"
-        "  {\"text\": \"Second long segment explaining the core concept...\", \"image_prompt\": \"Visual for core concept\"},\n"
-        "  {\"text\": \"Third long segment explaining details...\", \"image_prompt\": \"Visual for details\"},\n"
-        "  {\"text\": \"Fourth long segment for the conclusion...\", \"image_prompt\": \"Visual for conclusion\"}\n"
-        "]\n"
-        "Do not include markdown blocks or any other text outside the JSON array."
+        "{\n"
+        "  \"segments\": [\n"
+        "    {\"text\": \"First long segment explaining the introduction...\", \"image_prompt\": \"Visual for intro\"},\n"
+        "    {\"text\": \"Second long segment explaining the core concept...\", \"image_prompt\": \"Visual for core concept\"},\n"
+        "    {\"text\": \"Third long segment explaining details...\", \"image_prompt\": \"Visual for details\"},\n"
+        "    {\"text\": \"Fourth long segment for the conclusion...\", \"image_prompt\": \"Visual for conclusion\"}\n"
+        "  ]\n"
+        "}\n"
+        "Do not include markdown blocks or any other text outside the JSON object."
     )
     
     try:
-        response = requests.post(f"{OLLAMA_URL}/api/generate", json={
-            "model": OLLAMA_MODEL,
-            "prompt": f"{system_prompt}\n\nPrompt: {state['prompt']}",
-            "stream": False,
-            "format": "json" # Force JSON output if model supports it
-        })
-        response.raise_for_status()
-        output = response.json().get("response", "[]")
+        output = ""
+        if LLM_PROVIDER == "openai":
+            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": state['prompt']}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            res = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+            res.raise_for_status()
+            output = res.json()["choices"][0]["message"]["content"]
+            
+        elif LLM_PROVIDER == "together":
+            headers = {"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": state['prompt']}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            res = requests.post("https://api.together.xyz/v1/chat/completions", json=payload, headers=headers)
+            res.raise_for_status()
+            output = res.json()["choices"][0]["message"]["content"]
+            
+        else: # Default to ollama
+            res = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                "model": LLM_MODEL,
+                "prompt": f"{system_prompt}\n\nPrompt: {state['prompt']}",
+                "stream": False,
+                "format": "json"
+            })
+            res.raise_for_status()
+            output = res.json().get("response", "{}")
         
         # Clean up possible markdown wrappers
         output = output.strip()
@@ -67,16 +101,14 @@ def generate_script_segments(state: WorkflowState) -> WorkflowState:
         print(f"<- LLM Raw Output:\n{output}")
         
         # Parse JSON
-        segments = json.loads(output)
+        parsed = json.loads(output)
         
-        # If the LLM returned an object containing the array instead of a direct array
-        if isinstance(segments, dict):
-            for key, val in segments.items():
-                if isinstance(val, list):
-                    segments = val
-                    break
-            else:
-                segments = [segments] # Fallback: treat the dict itself as a single segment
+        if isinstance(parsed, dict) and "segments" in parsed:
+            segments = parsed["segments"]
+        elif isinstance(parsed, list):
+            segments = parsed
+        else:
+            segments = [parsed]
                 
         state["segments"] = segments
     except Exception as e:

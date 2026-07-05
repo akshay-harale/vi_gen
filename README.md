@@ -1,0 +1,62 @@
+# VI Gen: AI Video Generation Pipeline
+
+VI Gen is an automated pipeline that takes a simple text prompt and generates a fully produced, multi-segment video complete with dynamic AI-generated images and a natural AI voiceover.
+
+## Architecture
+
+The project is broken down into a microservices architecture:
+- **UI (Vite/React)**: A web interface to submit prompts and monitor job progress.
+- **API Gateway (Express)**: Manages job creation and fetches job status from the database.
+- **Redis Queue**: A lightweight message broker to queue rendering jobs.
+- **Postgres Database**: Persistent storage for job metadata, status, and generated scripts.
+- **Worker (Python/LangGraph)**: The core engine that processes jobs using a state graph.
+
+### The Worker Pipeline (LangGraph)
+1. **Script Generation**: Calls an LLM (Ollama, OpenAI, or Together AI) to write a detailed 4-5 segment script with corresponding image prompts.
+2. **Audio Synthesis**: Uses [Kokoro](https://github.com/hexgrad/kokoro) TTS (an open-weight model) to generate highly realistic voiceovers locally.
+3. **Image Generation**: Calls the Together AI API (`FLUX.2-pro`) to generate dynamic visuals for each segment.
+4. **Video Compilation**: Uses MoviePy to stitch the audio and images into a final `.mp4` video perfectly synchronized to the voiceover.
+
+## Prerequisites
+
+- **Docker** and **Docker Compose**
+- **Ollama** (Optional, if using `ollama` as your LLM provider)
+- **API Keys**:
+  - Together AI API Key (Required for Image Generation and optional for Script Generation)
+  - OpenAI API Key (Optional, if using `openai` as your LLM provider)
+
+## Configuration
+
+Environment variables are managed inside the `docker-compose.yml` file. Modify the `video-render-worker` environment section to configure your setup:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_PROVIDER` | The LLM engine to use for writing scripts (`ollama`, `openai`, `together`). | `ollama` |
+| `LLM_MODEL` | The specific model name. Examples: `qwen3:8b` (Ollama), `gpt-4o` (OpenAI), `meta-llama/Llama-3-70b-chat-hf` (Together). | `qwen3:8b` |
+| `TOGETHER_API_KEY` | Required for image generation. | *(Your Key)* |
+| `OPENAI_API_KEY` | Required only if `LLM_PROVIDER=openai`. | *(Your Key)* |
+| `OLLAMA_URL` | The endpoint for your local Ollama instance. | `http://host.docker.internal:11434` |
+
+## Getting Started
+
+1. **Configure API Keys**
+   Open `docker-compose.yml` and paste your API keys into the `video-render-worker` environment section.
+   
+2. **Build and Run**
+   Start the entire stack in detached mode:
+   ```bash
+   docker-compose up --build -d
+   ```
+
+3. **Access the Application**
+   - **UI**: Open your browser and navigate to `http://localhost:5173`
+   - **API Gateway**: Running on `http://localhost:3000`
+
+4. **Monitor Worker Logs**
+   To watch the AI generate your video in real-time:
+   ```bash
+   docker-compose logs -f video-render-worker
+   ```
+
+## Output
+All generated videos are saved locally in the `./output` directory relative to your project root.
