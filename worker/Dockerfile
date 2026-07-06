@@ -8,5 +8,10 @@ RUN apt-get update && apt-get install -y imagemagick fonts-liberation espeak-ng 
     sed -i 's/<policy domain="path" rights="none" pattern="@\*"\/>/<!-- <policy domain="path" rights="none" pattern="@\*"\/> -->/g' /etc/ImageMagick-7/policy.xml || true
 
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download models to bake them into the Docker image
+COPY download_models.py .
+RUN python download_models.py
+
 COPY . .
 CMD ["python", "-u", "main.py"]

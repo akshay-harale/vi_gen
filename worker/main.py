@@ -1,14 +1,66 @@
 import os
 import json
+import logging
+
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('Worker')
 import time
+import ssl
+import urllib3
+import requests
+import httpx
 import redis
 import psycopg2
-import requests
 import subprocess
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
 from together import Together
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+
+# --- SSL BYPASS FOR CORPORATE VPN ---
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+ssl._create_default_https_context = ssl._create_unverified_context
+
+old_create_default_context = ssl.create_default_context
+def new_create_default_context(*args, **kwargs):
+    ctx = old_create_default_context(*args, **kwargs)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+ssl.create_default_context = new_create_default_context
+
+old_request = requests.Session.request
+def new_request(*args, **kwargs):
+    kwargs['verify'] = False
+    return old_request(*args, **kwargs)
+requests.Session.request = new_request
+
+old_httpx_client_init = httpx.Client.__init__
+def new_httpx_client_init(self, *args, **kwargs):
+    kwargs['verify'] = False
+    old_httpx_client_init(self, *args, **kwargs)
+httpx.Client.__init__ = new_httpx_client_init
+
+# --- HUGGINGFACE FILENAME & HANG PATCH ---
+# Models are now pre-downloaded in the Dockerfile! 
+# We just need to patch huggingface_hub to return the pre-downloaded paths.
+from huggingface_hub import file_download
+old_hf_hub_download = file_download.hf_hub_download
+def new_hf_hub_download(*args, **kwargs):
+    fname = kwargs.get('filename')
+    if not fname and len(args) > 1:
+        fname = args[1]
+    if fname in ['kokoro-v0_19.pth', 'kokoro-v1_0.pth']:
+        return '/app/kokoro-v1_0.pth'
+    if fname == 'voices/af_heart.pt' or fname == 'af_heart.pt':
+        return '/app/af_heart.pt'
+    return old_hf_hub_download(*args, **kwargs)
+file_download.hf_hub_download = new_hf_hub_download
+# ------------------------------------
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_URL = os.getenv("DB_URL", "postgres://user:pass@localhost:5432/videodb")
@@ -30,91 +82,99 @@ class WorkflowState(TypedDict):
     error: str
 
 def generate_script_segments(state: WorkflowState) -> WorkflowState:
-    print(f"[Node: Script] Generating script for {state['job_id']} using {LLM_PROVIDER} ({LLM_MODEL})")
-    system_prompt = (
-        "You are an expert video script writer. "
-        "Create a comprehensive, highly detailed script for a video about the user's prompt. "
-        "You MUST output exactly 4 to 5 segments. "
-        "Return ONLY a JSON object with a single key 'segments' containing an array of 4 to 5 objects. Each object must have exactly two keys: "
-        "'text' (the spoken voiceover, which should be long and detailed) and 'image_prompt' (a visual description to generate an image). "
-        "Example format:\n"
-        "{\n"
-        "  \"segments\": [\n"
-        "    {\"text\": \"First long segment explaining the introduction...\", \"image_prompt\": \"Visual for intro\"},\n"
-        "    {\"text\": \"Second long segment explaining the core concept...\", \"image_prompt\": \"Visual for core concept\"},\n"
-        "    {\"text\": \"Third long segment explaining details...\", \"image_prompt\": \"Visual for details\"},\n"
-        "    {\"text\": \"Fourth long segment for the conclusion...\", \"image_prompt\": \"Visual for conclusion\"}\n"
-        "  ]\n"
-        "}\n"
-        "Do not include markdown blocks or any other text outside the JSON object."
-    )
-    
-    try:
-        output = ""
-        if LLM_PROVIDER == "openai":
-            headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": state['prompt']}
-                ],
-                "response_format": {"type": "json_object"}
-            }
-            res = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
-            res.raise_for_status()
-            output = res.json()["choices"][0]["message"]["content"]
-            
-        elif LLM_PROVIDER == "together":
-            headers = {"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": state['prompt']}
-                ],
-                "response_format": {"type": "json_object"}
-            }
-            res = requests.post("https://api.together.xyz/v1/chat/completions", json=payload, headers=headers)
-            res.raise_for_status()
-            output = res.json()["choices"][0]["message"]["content"]
-            
-        else: # Default to ollama
-            res = requests.post(f"{OLLAMA_URL}/api/generate", json={
-                "model": LLM_MODEL,
-                "prompt": f"{system_prompt}\n\nPrompt: {state['prompt']}",
-                "stream": False,
-                "format": "json"
-            })
-            res.raise_for_status()
-            output = res.json().get("response", "{}")
-        
-        # Clean up possible markdown wrappers
-        output = output.strip()
-        if output.startswith("```json"):
-            output = output[7:]
-        elif output.startswith("```"):
-            output = output[3:]
-        if output.endswith("```"):
-            output = output[:-3]
-        output = output.strip()
-        
-        print(f"<- LLM Raw Output:\n{output}")
-        
-        # Parse JSON
-        parsed = json.loads(output)
-        
-        if isinstance(parsed, dict) and "segments" in parsed:
-            segments = parsed["segments"]
-        elif isinstance(parsed, list):
-            segments = parsed
-        else:
-            segments = [parsed]
+    logger.info(f"[Node: Script] Generating script for {state['job_id']} using {LLM_PROVIDER} ({LLM_MODEL})")
+    system_prompt = """You are a video script writer. Based on the prompt, generate a JSON object with a list of 'segments'.
+Each segment should have:
+- 'text': the narration text (keep it engaging and concise, 2-3 sentences max per segment)
+- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment.
+
+Respond ONLY with valid JSON.
+Example format:
+{
+  "segments": [
+    {"text": "...", "image_prompt": "..."}
+  ]
+}
+"""
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if LLM_PROVIDER == "openai":
+                headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+                payload = {
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": state['prompt']}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "max_tokens": 4000
+                }
+                res = requests.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+                res.raise_for_status()
+                output = res.json()["choices"][0]["message"]["content"]
                 
-        state["segments"] = segments
-    except Exception as e:
-        print(f"[Error] Failed to generate script: {e}")
-        state["error"] = str(e)
+            elif LLM_PROVIDER == "together":
+                headers = {"Authorization": f"Bearer {TOGETHER_API_KEY}", "Content-Type": "application/json"}
+                payload = {
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": state['prompt']}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "max_tokens": 4000
+                }
+                res = requests.post("https://api.together.xyz/v1/chat/completions", json=payload, headers=headers)
+                res.raise_for_status()
+                output = res.json()["choices"][0]["message"]["content"]
+                
+            else: # Default to ollama
+                res = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                    "model": LLM_MODEL,
+                    "prompt": f"{system_prompt}\n\nPrompt: {state['prompt']}",
+                    "stream": False,
+                    "format": "json"
+                })
+                res.raise_for_status()
+                output = res.json().get("response", "{}")
+            
+            # Clean up possible markdown wrappers
+            output = output.strip()
+            if output.startswith("```json"):
+                output = output[7:]
+            elif output.startswith("```"):
+                output = output[3:]
+            if output.endswith("```"):
+                output = output[:-3]
+            output = output.strip()
+            
+            logger.info(f"<- LLM Raw Output (Attempt {attempt+1}):\n{output}")
+            
+            # Parse JSON
+            parsed = json.loads(output)
+            
+            if isinstance(parsed, dict) and "segments" in parsed:
+                segments = parsed["segments"]
+            elif isinstance(parsed, list):
+                segments = parsed
+            else:
+                segments = [parsed]
+                
+            state["segments"] = segments
+            return state
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                state["error"] = f"Failed to generate valid JSON after {max_retries} attempts: {str(e)}"
+                return state
+        except Exception as e:
+            logger.error(f"API request failed on attempt {attempt+1}: {e}")
+            if attempt == max_retries - 1:
+                state["error"] = str(e)
+                return state
     return state
 
 import soundfile as sf
@@ -127,7 +187,7 @@ tts_pipeline = KPipeline(lang_code='a')
 
 def generate_audio(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
-    print(f"[Node: Audio] Generating audio via Kokoro for {state['job_id']}")
+    logger.info(f"[Node: Audio] Generating audio via Kokoro for {state['job_id']}")
     
     audio_paths = []
     for idx, seg in enumerate(state.get("segments", [])):
@@ -149,8 +209,9 @@ def generate_audio(state: WorkflowState) -> WorkflowState:
             sf.write(out_path, final_audio, 24000)
             
             audio_paths.append(out_path)
+            logger.info(f"[Node: Audio] Generated audio for segment {idx+1}/{len(state.get('segments', []))}")
         except Exception as e:
-            print(f"[Error] Kokoro failed for segment {idx}: {e}")
+            logger.error(f"Kokoro failed for segment {idx}: {e}")
             state["error"] = str(e)
             return state
             
@@ -159,7 +220,7 @@ def generate_audio(state: WorkflowState) -> WorkflowState:
 
 def generate_images(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
-    print(f"[Node: Images] Generating images via Together AI for {state['job_id']}")
+    logger.info(f"[Node: Images] Generating images via Together AI for {state['job_id']}")
     
     if not TOGETHER_API_KEY:
         state["error"] = "Missing TOGETHER_API_KEY"
@@ -186,13 +247,9 @@ def generate_images(state: WorkflowState) -> WorkflowState:
                 "Content-Type": "application/json"
             }
             
-            print(f"-> Sending Together request for segment {idx}:\n{payload}")
-            
             response = requests.post("https://api.together.xyz/v1/images/generations", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
-            print(f"<- Received Together response for segment {idx}:\n{data}")
             
             # Extract image either from base64 or URL
             image_obj = data.get("data", [{}])[0]
@@ -208,10 +265,11 @@ def generate_images(state: WorkflowState) -> WorkflowState:
                 raise Exception(f"No image data found in response object: {image_obj}")
                 
             image_paths.append(out_path)
+            logger.info(f"[Node: Images] Generated image for segment {idx+1}/{len(state.get('segments', []))}")
         except Exception as e:
-            print(f"[Error] Image generation failed for segment {idx}: {e}")
+            logger.error(f"Image generation failed for segment {idx}: {e}")
             if hasattr(e, 'response') and e.response is not None:
-                print(f"Response Body: {e.response.text}")
+                logger.info(f"Response Body: {e.response.text}")
             state["error"] = str(e)
             return state
 
@@ -220,7 +278,7 @@ def generate_images(state: WorkflowState) -> WorkflowState:
 
 def compile_video(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
-    print(f"[Node: Compile] Compiling final video for {state['job_id']}")
+    logger.info(f"[Node: Compile] Compiling final video for {state['job_id']}")
     
     audio_paths = state.get("audio_paths", [])
     image_paths = state.get("image_paths", [])
@@ -239,11 +297,14 @@ def compile_video(state: WorkflowState) -> WorkflowState:
             
         final_video = concatenate_videoclips(clips, method="compose")
         out_path = f"/app/output/{state['job_id']}.mp4"
+        
+        # We can suppress moviepy's internal stdout to keep logs clean, but it's okay for now
         final_video.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
         
         state["output_video_path"] = out_path
+        logger.info(f"[Node: Compile] Video compiled successfully to {out_path}")
     except Exception as e:
-        print(f"[Error] Video compilation failed: {e}")
+        logger.error(f"Video compilation failed: {e}")
         state["error"] = str(e)
         
     return state
@@ -269,7 +330,7 @@ def get_db_connection():
         conn.autocommit = True
         return conn
     except Exception as e:
-        print(f"Failed to connect to Database: {e}")
+        logger.error(f"Failed to connect to Database: {e}")
         return None
 
 def update_job_status(conn, job_id, status, script=None, video_url=None):
@@ -285,17 +346,17 @@ def update_job_status(conn, job_id, status, script=None, video_url=None):
                 cur.execute("UPDATE jobs SET status = %s, video_url = %s WHERE id = %s", (status, video_url, job_id))
             else:
                 cur.execute("UPDATE jobs SET status = %s WHERE id = %s", (status, job_id))
-            print(f"[Worker DB] Updated job {job_id} to {status}")
+            logger.info(f"[Worker DB] Updated job {job_id} to {status}")
     except Exception as e:
-        print(f"Error updating DB: {e}")
+        logger.error(f"Error updating DB: {e}")
 
 def main():
-    print(f"Starting Video Render Worker (LangGraph)... Connecting to {REDIS_URL}")
+    logger.info(f"Starting Video Render Worker (LangGraph)... Connecting to {REDIS_URL}")
     r = redis.from_url(REDIS_URL)
     
     conn = get_db_connection()
     if not conn:
-        print("Waiting for database...")
+        logger.info("Waiting for database...")
         time.sleep(5)
         conn = get_db_connection()
 
@@ -311,7 +372,7 @@ def main():
                 job_id = job_data.get("jobId")
                 prompt = job_data.get("prompt")
 
-                print(f"[Worker] Picked up job {job_id} with prompt: '{prompt}'")
+                logger.info(f"[Worker] Picked up job {job_id} with prompt: '{prompt}'")
                 update_job_status(conn, job_id, "PROCESSING")
 
                 initial_state = {
@@ -327,17 +388,17 @@ def main():
                 final_state = app.invoke(initial_state)
                 
                 if final_state.get("error"):
-                    print(f"[Worker] Job {job_id} FAILED with error: {final_state['error']}")
+                    logger.error(f"[Worker] Job {job_id} FAILED with error: {final_state['error']}")
                     update_job_status(conn, job_id, "FAILED")
                 else:
-                    print(f"[Worker] Completed job {job_id}")
+                    logger.info(f"[Worker] Completed job {job_id}")
                     # Convert JSON segments back to string for DB
                     script_str = json.dumps(final_state.get("segments", []), indent=2)
                     video_url = f"/output/{job_id}.mp4"
                     update_job_status(conn, job_id, "COMPLETED", script=script_str, video_url=video_url)
                     
         except Exception as e:
-            print(f"Worker loop error: {e}")
+            logger.error(f"Worker loop error: {e}")
             time.sleep(1)
             if conn and conn.closed != 0:
                  conn = get_db_connection()

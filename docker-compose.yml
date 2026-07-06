@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   ui:
     build:
@@ -58,6 +56,16 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+
+  db-init:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: node scripts/init_db.js
+    environment:
+      - DB_URL=postgres://user:pass@postgres-db:5432/videodb
+    depends_on:
+      - postgres-db
 
 volumes:
   redis_data:
