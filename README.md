@@ -14,7 +14,7 @@ The project is broken down into a microservices architecture:
 ### The Worker Pipeline (LangGraph)
 1. **Script Generation**: Calls an LLM (Ollama, OpenAI, or Together AI) to write a detailed 4-5 segment script with corresponding image prompts.
 2. **Audio Synthesis**: Uses [Kokoro](https://github.com/hexgrad/kokoro) TTS (an open-weight model) to generate highly realistic voiceovers locally.
-3. **Image Generation**: Calls the Together AI API (`FLUX.2-pro`) to generate dynamic visuals for each segment.
+3. **Image Generation**: Calls the Together AI API (`IMAGE_MODEL`) to generate dynamic visuals for each segment.
 4. **Video Compilation**: Uses MoviePy to stitch the audio and images into a final `.mp4` video perfectly synchronized to the voiceover.
 
 ## Prerequisites
@@ -27,12 +27,13 @@ The project is broken down into a microservices architecture:
 
 ## Configuration
 
-Environment variables are managed inside the `docker-compose.yml` file. Modify the `video-render-worker` environment section to configure your setup:
+Environment variables are securely managed using a `.env` file at the root of your project.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LLM_PROVIDER` | The LLM engine to use for writing scripts (`ollama`, `openai`, `together`). | `ollama` |
-| `LLM_MODEL` | The specific model name. Examples: `qwen3:8b` (Ollama), `gpt-4o` (OpenAI), `meta-llama/Llama-3-70b-chat-hf` (Together). | `qwen3:8b` |
+| `LLM_MODEL` | The specific text model name. Examples: `qwen3:8b` (Ollama), `gpt-4o` (OpenAI), `google/gemma-4-31B-it` (Together). | `qwen3:8b` |
+| `IMAGE_MODEL` | The specific image model name. Examples: `stabilityai/stable-diffusion-xl-base-1.0`, `black-forest-labs/FLUX.1-schnell` | `stabilityai/stable-diffusion-xl-base-1.0` |
 | `TOGETHER_API_KEY` | Required for image generation. | *(Your Key)* |
 | `OPENAI_API_KEY` | Required only if `LLM_PROVIDER=openai`. | *(Your Key)* |
 | `OLLAMA_URL` | The endpoint for your local Ollama instance. | `http://host.docker.internal:11434` |
@@ -40,7 +41,15 @@ Environment variables are managed inside the `docker-compose.yml` file. Modify t
 ## Getting Started
 
 1. **Configure API Keys**
-   Open `docker-compose.yml` and paste your API keys into the `video-render-worker` environment section.
+   Create a `.env` file in the root of your project (or edit the existing one) and add your environment variables:
+   ```env
+   LLM_PROVIDER=together
+   LLM_MODEL=google/gemma-4-31B-it
+   IMAGE_MODEL=stabilityai/stable-diffusion-xl-base-1.0
+   TOGETHER_API_KEY=your_together_key_here
+   OPENAI_API_KEY=your_openai_key_here
+   OLLAMA_URL=http://host.docker.internal:11434
+   ```
    
 2. **Build and Run**
    Start the entire stack in detached mode:

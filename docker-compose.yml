@@ -37,15 +37,12 @@ services:
     build:
       context: ./worker
       dockerfile: Dockerfile
+    env_file:
+      - .env
     environment:
       - REDIS_URL=redis://redis-queue:6379
       - DB_URL=postgres://user:pass@postgres-db:5432/videodb
       - API_URL=http://api-gateway:3000
-      - OLLAMA_URL=http://host.docker.internal:11434
-      - LLM_PROVIDER=together
-      - LLM_MODEL=google/gemma-4-31B-it
-      - OPENAI_API_KEY=
-      - TOGETHER_API_KEY=
     depends_on:
       - redis-queue
     volumes:

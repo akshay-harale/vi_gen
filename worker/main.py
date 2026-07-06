@@ -18,6 +18,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:8b")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 API_URL = os.getenv("API_URL", "http://localhost:3000")
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 
 class WorkflowState(TypedDict):
     job_id: str
@@ -173,7 +174,7 @@ def generate_images(state: WorkflowState) -> WorkflowState:
         try:
             payload = {
                 "prompt": img_prompt,
-                "model": "black-forest-labs/FLUX.2-pro",
+                "model": IMAGE_MODEL,
                 "width": 1024,
                 "height": 576,
                 "response_format": "b64_json"
