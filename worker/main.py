@@ -19,7 +19,18 @@ import subprocess
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph, END
 from together import Together
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
+import imaplib
+import email
+import re
+from instagrapi import Client
+from instagrapi.mixins.challenge import ChallengeChoice
+from PIL import Image, ImageDraw
+from pygments import highlight
+from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+from pygments.formatters import ImageFormatter
+from pygments.styles import get_style_by_name
+import io
 
 # --- SSL BYPASS FOR CORPORATE VPN ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -72,6 +83,11 @@ API_URL = os.getenv("API_URL", "http://localhost:3000")
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 
+IG_USERNAME = os.getenv("IG_USERNAME", "")
+IG_PASSWORD = os.getenv("IG_PASSWORD", "")
+GMAIL_USERNAME = os.getenv("GMAIL_USERNAME", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+
 class WorkflowState(TypedDict):
     job_id: str
     prompt: str
@@ -83,16 +99,26 @@ class WorkflowState(TypedDict):
 
 def generate_script_segments(state: WorkflowState) -> WorkflowState:
     logger.info(f"[Node: Script] Generating script for {state['job_id']} using {LLM_PROVIDER} ({LLM_MODEL})")
-    system_prompt = """You are a video script writer. Based on the prompt, generate a JSON object with a list of 'segments'.
+    system_prompt = """You are a video script writer creating content for YouTube Shorts or Instagram Reels (Vertical 9:16 format). 
+Based on the prompt, generate a JSON object with a list of 'segments'.
 Each segment should have:
 - 'text': the narration text (keep it engaging and concise, 2-3 sentences max per segment)
-- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment.
+- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment. (e.g. "A blurry cinematic shot of a glowing server room").
+- 'code_snippet' (optional): If the segment involves programming concepts, provide the exact code block. IMPORTANT: Code will be displayed on a vertical phone screen. You MUST format the code with short lines (maximum 35 characters per line) by adding line breaks and proper indentation. Keep it under 8 lines total.
+- 'code_language' (optional): The programming language for the code snippet (e.g. "java").
+
+IMPORTANT: The images will be generated in a vertical 9:16 aspect ratio. Instruct the image generator to compose the shot vertically.
 
 Respond ONLY with valid JSON.
 Example format:
 {
   "segments": [
-    {"text": "...", "image_prompt": "..."}
+    {
+      "text": "...", 
+      "image_prompt": "A vertical composition of a dark IDE screen...",
+      "code_snippet": "List<String> lines =\n    Files.readAllLines(\n        Paths.get(\"file.txt\")\n    );",
+      "code_language": "java"
+    }
   ]
 }
 """
@@ -236,8 +262,8 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             payload = {
                 "prompt": img_prompt,
                 "model": IMAGE_MODEL,
-                "width": 1024,
-                "height": 576,
+                "width": 576,
+                "height": 1024,
                 "response_format": "b64_json"
                 # Not sending 'steps' at all to avoid the 400 error
             }
@@ -264,6 +290,64 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             else:
                 raise Exception(f"No image data found in response object: {image_obj}")
                 
+            # If the segment contains code, overlay it using Pygments and PIL
+            code_snippet = seg.get("code_snippet")
+            code_language = seg.get("code_language", "text")
+            if code_snippet:
+                try:
+                    logger.info(f"Overlaying code snippet for {state['job_id']} segment {idx}")
+                    try:
+                        lexer = get_lexer_by_name(code_language)
+                    except Exception:
+                        lexer = get_lexer_by_name("text")
+                        
+                    # Manually wrap very long lines as a fallback
+                    wrapped_lines = []
+                    for line in code_snippet.split('\n'):
+                        if len(line) > 40:
+                            import textwrap
+                            # wrap preserves existing indents if possible, but we just want to forcefully wrap long lines
+                            wrapped_lines.extend(textwrap.wrap(line, width=40))
+                        else:
+                            wrapped_lines.append(line)
+                    wrapped_snippet = '\n'.join(wrapped_lines)
+                        
+                    style = get_style_by_name('monokai')
+                    formatter = ImageFormatter(font_name='Liberation Mono', font_size=52, style=style, line_numbers=False)
+                    code_png_data = highlight(wrapped_snippet, lexer, formatter)
+                    
+                    code_img = Image.open(io.BytesIO(code_png_data)).convert("RGBA")
+                    
+                    # Open the background image
+                    bg = Image.open(out_path).convert("RGBA")
+                    
+                    # Resize code image if it's wider than the background (with 40px padding)
+                    max_width = bg.width - 40
+                    if code_img.width > max_width:
+                        ratio = max_width / code_img.width
+                        new_h = int(code_img.height * ratio)
+                        code_img = code_img.resize((max_width, new_h), Image.Resampling.LANCZOS)
+                        
+                    # Center the code image
+                    x = (bg.width - code_img.width) // 2
+                    y = (bg.height - code_img.height) // 2
+                    
+                    # Create a semi-transparent black box behind the code
+                    draw = ImageDraw.Draw(bg, 'RGBA')
+                    padding = 20
+                    draw.rectangle(
+                        [x - padding, y - padding, x + code_img.width + padding, y + code_img.height + padding],
+                        fill=(0, 0, 0, 180),
+                        outline=(255, 255, 255, 50),
+                        width=2
+                    )
+                    
+                    bg.paste(code_img, (x, y), code_img)
+                    bg.convert("RGB").save(out_path)
+                    logger.info(f"Code overlaid successfully for {state['job_id']} segment {idx}")
+                except Exception as e:
+                    logger.error(f"Failed to overlay code: {e}")
+            
             image_paths.append(out_path)
             logger.info(f"[Node: Images] Generated image for segment {idx+1}/{len(state.get('segments', []))}")
         except Exception as e:
@@ -292,7 +376,7 @@ def compile_video(state: WorkflowState) -> WorkflowState:
         for a_path, i_path in zip(audio_paths, image_paths):
             audio_clip = AudioFileClip(a_path)
             # Make the image clip last exactly as long as the audio
-            img_clip = ImageClip(i_path).set_duration(audio_clip.duration).set_audio(audio_clip)
+            img_clip = ImageClip(i_path).with_duration(audio_clip.duration).with_audio(audio_clip)
             clips.append(img_clip)
             
         final_video = concatenate_videoclips(clips, method="compose")
@@ -309,17 +393,121 @@ def compile_video(state: WorkflowState) -> WorkflowState:
         
     return state
 
+def get_code_from_email(username):
+    logger.info("Attempting to fetch Instagram verification code from Gmail...")
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(GMAIL_USERNAME, GMAIL_APP_PASSWORD)
+        mail.select("inbox")
+        
+        # Search for recent emails from Instagram
+        result, data = mail.search(None, '(FROM "security@mail.instagram.com")')
+        
+        if not data[0]:
+            logger.error("No emails found from Instagram.")
+            return False
+            
+        # Get the latest email
+        latest_email_id = data[0].split()[-1]
+        result, message_data = mail.fetch(latest_email_id, '(RFC822)')
+        
+        raw_email = message_data[0][1]
+        msg = email.message_from_bytes(raw_email)
+        
+        # Extract the code using regex
+        subject = msg["Subject"]
+        if subject:
+            match = re.search(r'^(\d{6})', subject)
+            if match:
+                code = match.group(1)
+                logger.info(f"Successfully extracted code {code} from email subject.")
+                return code
+                
+        # If not in subject, check body
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True).decode()
+                    match = re.search(r'\b(\d{6})\b', body)
+                    if match:
+                        code = match.group(1)
+                        logger.info(f"Successfully extracted code {code} from email body.")
+                        return code
+        else:
+            body = msg.get_payload(decode=True).decode()
+            match = re.search(r'\b(\d{6})\b', body)
+            if match:
+                code = match.group(1)
+                logger.info(f"Successfully extracted code {code} from email body.")
+                return code
+                
+        logger.error("Could not find a 6-digit code in the email.")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch code from email: {e}")
+        return False
+
+def challenge_code_handler(username, choice):
+    if choice == ChallengeChoice.EMAIL:
+        logger.info("Instagram requested an EMAIL challenge.")
+        return get_code_from_email(username)
+    elif choice == ChallengeChoice.SMS:
+        logger.warning("Instagram requested an SMS challenge, which we cannot automate.")
+        return False
+    return False
+
+def upload_to_instagram(state: WorkflowState) -> WorkflowState:
+    if state.get("error"): return state
+    logger.info(f"[Node: Upload] Uploading video to Instagram for {state['job_id']}")
+    
+    if not IG_USERNAME or not IG_PASSWORD:
+        state["error"] = "Missing Instagram credentials in .env"
+        return state
+        
+    video_path = state.get("output_video_path")
+    if not video_path or not os.path.exists(video_path):
+        state["error"] = "No compiled video found to upload"
+        return state
+        
+    try:
+        thumbnail_path = state.get("image_paths")[0] if state.get("image_paths") else None
+        
+        cl = Client()
+        cl.challenge_code_handler = challenge_code_handler
+        
+        logger.info(f"Logging in to Instagram as {IG_USERNAME}...")
+        cl.login(IG_USERNAME, IG_PASSWORD)
+        
+        caption = state.get("segments", [])[0].get("text", "Automated Video") if state.get("segments") else "Automated Video"
+        caption += "\n\n#shorts #reels #ai"
+        
+        logger.info(f"Uploading Reel with caption: {caption}")
+        media = cl.clip_upload(
+            path=video_path,
+            caption=caption,
+            thumbnail=thumbnail_path
+        )
+        logger.info(f"[Node: Upload] Successfully uploaded to Instagram! Media ID: {media.pk}")
+    except Exception as e:
+        logger.error(f"[Error] Instagram upload failed: {e}")
+        state["error"] = f"Instagram Upload Error: {str(e)}"
+        
+    return state
+
 def build_graph():
     workflow = StateGraph(WorkflowState)
     workflow.add_node("script", generate_script_segments)
     workflow.add_node("audio", generate_audio)
     workflow.add_node("image", generate_images)
     workflow.add_node("compile", compile_video)
+    workflow.add_node("upload", upload_to_instagram)
     
     workflow.add_edge("script", "audio")
     workflow.add_edge("audio", "image")
     workflow.add_edge("image", "compile")
-    workflow.add_edge("compile", END)
+    workflow.add_edge("compile", "upload")
+    workflow.add_edge("upload", END)
     
     workflow.set_entry_point("script")
     return workflow.compile()
@@ -389,7 +577,9 @@ def main():
                 
                 if final_state.get("error"):
                     logger.error(f"[Worker] Job {job_id} FAILED with error: {final_state['error']}")
-                    update_job_status(conn, job_id, "FAILED")
+                    script_str = json.dumps(final_state.get("segments", []), indent=2) if final_state.get("segments") else None
+                    video_url = f"/output/{job_id}.mp4" if final_state.get("output_video_path") else None
+                    update_job_status(conn, job_id, "FAILED", script=script_str, video_url=video_url)
                 else:
                     logger.info(f"[Worker] Completed job {job_id}")
                     # Convert JSON segments back to string for DB

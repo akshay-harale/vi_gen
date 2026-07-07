@@ -5,7 +5,8 @@ python-dotenv==1.0.1
 langgraph
 langchain-core
 together==1.2.3
-moviepy==1.0.3
+moviepy==2.2.1
+instagrapi
 kokoro>=0.9.4
 soundfile
 torch
