@@ -37,6 +37,10 @@ Environment variables are securely managed using a `.env` file at the root of yo
 | `TOGETHER_API_KEY` | Required for image generation. | *(Your Key)* |
 | `OPENAI_API_KEY` | Required only if `LLM_PROVIDER=openai`. | *(Your Key)* |
 | `OLLAMA_URL` | The endpoint for your local Ollama instance. | `http://host.docker.internal:11434` |
+| `IG_USERNAME` | Required for automatic Instagram Reels upload. | *(Your Instagram Username)* |
+| `IG_PASSWORD` | Required for automatic Instagram Reels upload. | *(Your Instagram Password)* |
+| `GMAIL_USERNAME` | Required for bypassing Instagram email verification challenge. | *(Your Gmail address)* |
+| `GMAIL_APP_PASSWORD` | App Password for Gmail IMAP access. | *(Your Gmail App Password)* |
 
 ## Getting Started
 
@@ -49,6 +53,10 @@ Environment variables are securely managed using a `.env` file at the root of yo
    TOGETHER_API_KEY=your_together_key_here
    OPENAI_API_KEY=your_openai_key_here
    OLLAMA_URL=http://host.docker.internal:11434
+   IG_USERNAME=your_ig_username
+   IG_PASSWORD=your_ig_password
+   GMAIL_USERNAME=your_gmail@gmail.com
+   GMAIL_APP_PASSWORD=your_gmail_app_password
    ```
    
 2. **Build and Run**
