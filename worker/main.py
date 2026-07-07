@@ -462,7 +462,7 @@ def upload_to_instagram(state: WorkflowState) -> WorkflowState:
     logger.info(f"[Node: Upload] Uploading video to Instagram for {state['job_id']}")
     
     if not IG_USERNAME or not IG_PASSWORD:
-        state["error"] = "Missing Instagram credentials in .env"
+        logger.info("Instagram upload disabled (missing credentials in .env). Skipping upload step.")
         return state
         
     video_path = state.get("output_video_path")
