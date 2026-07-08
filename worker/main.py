@@ -97,13 +97,53 @@ class WorkflowState(TypedDict):
     output_video_path: str
     error: str
 
+def get_system_prompt_from_db():
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM settings WHERE key = 'system_prompt'")
+            row = cur.fetchone()
+            if row:
+                return row[0]
+    except Exception as e:
+        logger.error(f"Error fetching system prompt from DB: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return None
+
+def update_step_status(job_id, step, status):
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE jobs SET step_status = COALESCE(step_status, '{}'::jsonb) || %s WHERE id = %s",
+                (json.dumps({step: status}), job_id)
+            )
+    except Exception as e:
+        logger.error(f"Error updating step status for {job_id} ({step} -> {status}): {e}")
+    finally:
+        if conn:
+            conn.close()
+
 def generate_script_segments(state: WorkflowState) -> WorkflowState:
     logger.info(f"[Node: Script] Generating script for {state['job_id']} using {LLM_PROVIDER} ({LLM_MODEL})")
-    system_prompt = """You are a video script writer creating content for YouTube Shorts or Instagram Reels (Vertical 9:16 format). 
+    update_step_status(state['job_id'], 'script', 'processing')
+    
+    # Load system prompt from database
+    system_prompt = get_system_prompt_from_db()
+    if not system_prompt:
+        logger.info("Using hardcoded system prompt fallback")
+        system_prompt = """You are a video script writer creating content for YouTube Shorts or Instagram Reels (Vertical 9:16 format). 
 Based on the prompt, generate a JSON object with a list of 'segments'.
 Each segment should have:
 - 'text': the narration text (keep it engaging and concise, 2-3 sentences max per segment)
-- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment. (e.g. "A blurry cinematic shot of a glowing server room").
+- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment.
+  VISUAL THEME: The visual aesthetic must represent a clean, high-contrast engineering schematic, 2D technical vector diagram, or blueprint layout (e.g. "A minimal 2D vector blueprint diagram of... crisp white lines on a pure black background, blueprint schematic aesthetics, hardware details, high-contrast technical line art"). Avoid detailed real-world photos, photorealism, and blurry 3D environments.
 - 'code_snippet' (optional): If the segment involves programming concepts, provide the exact code block. IMPORTANT: Code will be displayed on a vertical phone screen. You MUST format the code with short lines (maximum 35 characters per line) by adding line breaks and proper indentation. Keep it under 8 lines total.
 - 'code_language' (optional): The programming language for the code snippet (e.g. "java").
 
@@ -115,7 +155,7 @@ Example format:
   "segments": [
     {
       "text": "...", 
-      "image_prompt": "A vertical composition of a dark IDE screen...",
+      "image_prompt": "A minimal 2D vector schematic blueprint diagram of a filesystem structure with dark background, crisp white lines...",
       "code_snippet": "List<String> lines =\n    Files.readAllLines(\n        Paths.get(\"file.txt\")\n    );",
       "code_language": "java"
     }
@@ -189,18 +229,22 @@ Example format:
                 segments = [parsed]
                 
             state["segments"] = segments
+            update_step_status(state['job_id'], 'script', 'completed')
             return state
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON on attempt {attempt+1}: {e}")
             if attempt == max_retries - 1:
                 state["error"] = f"Failed to generate valid JSON after {max_retries} attempts: {str(e)}"
+                update_step_status(state['job_id'], 'script', 'failed')
                 return state
         except Exception as e:
             logger.error(f"API request failed on attempt {attempt+1}: {e}")
             if attempt == max_retries - 1:
                 state["error"] = str(e)
+                update_step_status(state['job_id'], 'script', 'failed')
                 return state
+    update_step_status(state['job_id'], 'script', 'failed')
     return state
 
 import soundfile as sf
@@ -214,6 +258,7 @@ tts_pipeline = KPipeline(lang_code='a')
 def generate_audio(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
     logger.info(f"[Node: Audio] Generating audio via Kokoro for {state['job_id']}")
+    update_step_status(state['job_id'], 'audio', 'processing')
     
     audio_paths = []
     for idx, seg in enumerate(state.get("segments", [])):
@@ -239,17 +284,21 @@ def generate_audio(state: WorkflowState) -> WorkflowState:
         except Exception as e:
             logger.error(f"Kokoro failed for segment {idx}: {e}")
             state["error"] = str(e)
+            update_step_status(state['job_id'], 'audio', 'failed')
             return state
             
     state["audio_paths"] = audio_paths
+    update_step_status(state['job_id'], 'audio', 'completed')
     return state
 
 def generate_images(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
     logger.info(f"[Node: Images] Generating images via Together AI for {state['job_id']}")
+    update_step_status(state['job_id'], 'images', 'processing')
     
     if not TOGETHER_API_KEY:
         state["error"] = "Missing TOGETHER_API_KEY"
+        update_step_status(state['job_id'], 'images', 'failed')
         return state
         
     client = Together(api_key=TOGETHER_API_KEY)
@@ -265,7 +314,6 @@ def generate_images(state: WorkflowState) -> WorkflowState:
                 "width": 576,
                 "height": 1024,
                 "response_format": "b64_json"
-                # Not sending 'steps' at all to avoid the 400 error
             }
             
             headers = {
@@ -277,7 +325,6 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             response.raise_for_status()
             data = response.json()
             
-            # Extract image either from base64 or URL
             image_obj = data.get("data", [{}])[0]
             if image_obj.get("b64_json"):
                 import base64
@@ -290,7 +337,6 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             else:
                 raise Exception(f"No image data found in response object: {image_obj}")
                 
-            # If the segment contains code, overlay it using Pygments and PIL
             code_snippet = seg.get("code_snippet")
             code_language = seg.get("code_language", "text")
             if code_snippet:
@@ -301,12 +347,10 @@ def generate_images(state: WorkflowState) -> WorkflowState:
                     except Exception:
                         lexer = get_lexer_by_name("text")
                         
-                    # Manually wrap very long lines as a fallback
                     wrapped_lines = []
                     for line in code_snippet.split('\n'):
                         if len(line) > 40:
                             import textwrap
-                            # wrap preserves existing indents if possible, but we just want to forcefully wrap long lines
                             wrapped_lines.extend(textwrap.wrap(line, width=40))
                         else:
                             wrapped_lines.append(line)
@@ -318,21 +362,17 @@ def generate_images(state: WorkflowState) -> WorkflowState:
                     
                     code_img = Image.open(io.BytesIO(code_png_data)).convert("RGBA")
                     
-                    # Open the background image
                     bg = Image.open(out_path).convert("RGBA")
                     
-                    # Resize code image if it's wider than the background (with 40px padding)
                     max_width = bg.width - 40
                     if code_img.width > max_width:
                         ratio = max_width / code_img.width
                         new_h = int(code_img.height * ratio)
                         code_img = code_img.resize((max_width, new_h), Image.Resampling.LANCZOS)
                         
-                    # Center the code image
                     x = (bg.width - code_img.width) // 2
                     y = (bg.height - code_img.height) // 2
                     
-                    # Create a semi-transparent black box behind the code
                     draw = ImageDraw.Draw(bg, 'RGBA')
                     padding = 20
                     draw.rectangle(
@@ -355,20 +395,24 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             if hasattr(e, 'response') and e.response is not None:
                 logger.info(f"Response Body: {e.response.text}")
             state["error"] = str(e)
+            update_step_status(state['job_id'], 'images', 'failed')
             return state
 
     state["image_paths"] = image_paths
+    update_step_status(state['job_id'], 'images', 'completed')
     return state
 
 def compile_video(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
     logger.info(f"[Node: Compile] Compiling final video for {state['job_id']}")
+    update_step_status(state['job_id'], 'compile', 'processing')
     
     audio_paths = state.get("audio_paths", [])
     image_paths = state.get("image_paths", [])
     
     if len(audio_paths) != len(image_paths):
         state["error"] = "Mismatch in audio/image counts"
+        update_step_status(state['job_id'], 'compile', 'failed')
         return state
         
     try:
@@ -387,9 +431,11 @@ def compile_video(state: WorkflowState) -> WorkflowState:
         
         state["output_video_path"] = out_path
         logger.info(f"[Node: Compile] Video compiled successfully to {out_path}")
+        update_step_status(state['job_id'], 'compile', 'completed')
     except Exception as e:
         logger.error(f"Video compilation failed: {e}")
         state["error"] = str(e)
+        update_step_status(state['job_id'], 'compile', 'failed')
         
     return state
 
@@ -460,14 +506,17 @@ def challenge_code_handler(username, choice):
 def upload_to_instagram(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
     logger.info(f"[Node: Upload] Uploading video to Instagram for {state['job_id']}")
+    update_step_status(state['job_id'], 'upload', 'processing')
     
     if not IG_USERNAME or not IG_PASSWORD:
         logger.info("Instagram upload disabled (missing credentials in .env). Skipping upload step.")
+        update_step_status(state['job_id'], 'upload', 'skipped')
         return state
         
     video_path = state.get("output_video_path")
     if not video_path or not os.path.exists(video_path):
         state["error"] = "No compiled video found to upload"
+        update_step_status(state['job_id'], 'upload', 'failed')
         return state
         
     try:
@@ -489,9 +538,11 @@ def upload_to_instagram(state: WorkflowState) -> WorkflowState:
             thumbnail=thumbnail_path
         )
         logger.info(f"[Node: Upload] Successfully uploaded to Instagram! Media ID: {media.pk}")
+        update_step_status(state['job_id'], 'upload', 'completed')
     except Exception as e:
         logger.error(f"[Error] Instagram upload failed: {e}")
         state["error"] = f"Instagram Upload Error: {str(e)}"
+        update_step_status(state['job_id'], 'upload', 'failed')
         
     return state
 
@@ -561,8 +612,26 @@ def main():
                 prompt = job_data.get("prompt")
 
                 logger.info(f"[Worker] Picked up job {job_id} with prompt: '{prompt}'")
-                update_job_status(conn, job_id, "PROCESSING")
-
+                
+                # Pre-populate all steps as pending
+                initial_step_status = {
+                    "script": "pending",
+                    "audio": "pending",
+                    "images": "pending",
+                    "compile": "pending",
+                    "upload": "pending"
+                }
+                
+                if conn:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE jobs SET status = 'PROCESSING', step_status = %s WHERE id = %s",
+                                (json.dumps(initial_step_status), job_id)
+                            )
+                    except Exception as e:
+                        logger.error(f"Error initializing job steps: {e}")
+                
                 initial_state = {
                     "job_id": job_id,
                     "prompt": prompt,

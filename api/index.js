@@ -34,6 +34,31 @@ const pool = new Pool({
   connectionString: dbUrl,
 });
 
+const defaultPrompt = `You are a video script writer creating content for YouTube Shorts or Instagram Reels (Vertical 9:16 format). 
+Based on the prompt, generate a JSON object with a list of 'segments'.
+Each segment should have:
+- 'text': the narration text (keep it engaging and concise, 2-3 sentences max per segment)
+- 'image_prompt': a highly detailed, descriptive prompt for an AI image generator to create a visual for this segment.
+  VISUAL THEME: The visual aesthetic must represent a clean, high-contrast engineering schematic, 2D technical vector diagram, or blueprint layout (e.g. "A minimal 2D vector blueprint diagram of... crisp white lines on a pure black background, blueprint schematic aesthetics, hardware details, high-contrast technical line art"). Avoid detailed real-world photos, photorealism, and blurry 3D environments.
+- 'code_snippet' (optional): If the segment involves programming concepts, provide the exact code block. IMPORTANT: Code will be displayed on a vertical phone screen. You MUST format the code with short lines (maximum 35 characters per line) by adding line breaks and proper indentation. Keep it under 8 lines total.
+- 'code_language' (optional): The programming language for the code snippet (e.g. "java").
+
+IMPORTANT: The images will be generated in a vertical 9:16 aspect ratio. Instruct the image generator to compose the shot vertically.
+
+Respond ONLY with valid JSON.
+Example format:
+{
+  "segments": [
+    {
+      "text": "...", 
+      "image_prompt": "A minimal 2D vector schematic blueprint diagram of a filesystem structure with dark background, crisp white lines...",
+      "code_snippet": "List<String> lines =\\n    Files.readAllLines(\\n        Paths.get(\\"file.txt\\")\\n    );",
+      "code_language": "java"
+    }
+  ]
+}
+`;
+
 async function initDB() {
   try {
     await pool.query(`
@@ -46,19 +71,66 @@ async function initDB() {
       );
     `);
     
-    // Add script column if missing
+    // Add columns if missing
     try {
-      await pool.query(`ALTER TABLE jobs ADD COLUMN script TEXT;`);
-    } catch (e) {
-      // Ignore error if column already exists
-    }
+      await pool.query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script TEXT;`);
+    } catch (e) {}
+
+    try {
+      await pool.query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_status JSONB;`);
+    } catch (e) {}
     
-    console.log('Database initialized: jobs table is ready.');
+    // Create settings table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(255) PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+
+    // Seed default system prompt
+    await pool.query(`
+      INSERT INTO settings (key, value)
+      VALUES ('system_prompt', $1)
+      ON CONFLICT (key) DO NOTHING;
+    `, [defaultPrompt]);
+    
+    console.log('Database initialized: jobs and settings tables are ready.');
   } catch (err) {
     console.error('Failed to initialize database', err);
   }
 }
 initDB();
+
+// Settings endpoints
+app.get('/api/settings/system_prompt', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT value FROM settings WHERE key = 'system_prompt'");
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'System prompt setting not found' });
+    }
+    res.json({ system_prompt: result.rows[0].value });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch system prompt' });
+  }
+});
+
+app.post('/api/settings/system_prompt', async (req, res) => {
+  const { system_prompt } = req.body;
+  if (!system_prompt) return res.status(400).json({ error: 'system_prompt is required' });
+  
+  try {
+    await pool.query(
+      "INSERT INTO settings (key, value) VALUES ('system_prompt', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [system_prompt]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update system prompt' });
+  }
+});
 
 app.post('/api/jobs', async (req, res) => {
   const { prompt } = req.body;
