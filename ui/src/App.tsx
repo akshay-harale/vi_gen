@@ -100,6 +100,45 @@ function App() {
     setLoading(false);
   };
 
+  const navigateJob = (direction: 'next' | 'prev') => {
+    if (!activeJobId || jobs.length === 0) return;
+    const currentIndex = jobs.findIndex(j => j.id === activeJobId);
+    if (currentIndex === -1) return;
+
+    if (direction === 'prev') {
+      const nextIndex = currentIndex - 1;
+      if (nextIndex >= 0) {
+        setActiveJobId(jobs[nextIndex].id);
+      }
+    } else {
+      const nextIndex = currentIndex + 1;
+      if (nextIndex < jobs.length) {
+        setActiveJobId(jobs[nextIndex].id);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!activeJobId || jobs.length === 0) return;
+      const currentIndex = jobs.findIndex(j => j.id === activeJobId);
+      if (currentIndex === -1) return;
+
+      if (e.key === 'ArrowLeft') {
+        const nextIndex = currentIndex - 1;
+        if (nextIndex >= 0) setActiveJobId(jobs[nextIndex].id);
+      } else if (e.key === 'ArrowRight') {
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < jobs.length) setActiveJobId(jobs[nextIndex].id);
+      } else if (e.key === 'Escape') {
+        setActiveJobId(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeJobId, jobs]);
+
   useEffect(() => {
     fetchJobs();
     fetchSettings();
@@ -279,13 +318,33 @@ function App() {
                 <span className="schematic-tag">BUILD METADATA // {activeJob.id}</span>
                 <h3 style={{ fontSize: '1.5rem', margin: '4px 0 0 0' }}>"{activeJob.prompt}"</h3>
               </div>
-              <button 
-                onClick={() => setActiveJobId(null)} 
-                className="btn-schematic" 
-                style={{ padding: '6px 12px', fontSize: '12px' }}
-              >
-                [CLOSE]
-              </button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button 
+                  onClick={() => navigateJob('prev')} 
+                  disabled={jobs.findIndex(j => j.id === activeJobId) <= 0}
+                  className="btn-schematic" 
+                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                  title="Previous Job (Arrow Left)"
+                >
+                  [&lt;]
+                </button>
+                <button 
+                  onClick={() => navigateJob('next')} 
+                  disabled={jobs.findIndex(j => j.id === activeJobId) >= jobs.length - 1}
+                  className="btn-schematic" 
+                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                  title="Next Job (Arrow Right)"
+                >
+                  [&gt;]
+                </button>
+                <button 
+                  onClick={() => setActiveJobId(null)} 
+                  className="btn-schematic" 
+                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                >
+                  [CLOSE]
+                </button>
+              </div>
             </div>
 
             {/* Modal Body */}
