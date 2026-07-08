@@ -2,7 +2,25 @@
 
 VI Gen is an automated pipeline that takes a simple text prompt and generates a fully produced, multi-segment video complete with dynamic AI-generated images and a natural AI voiceover.
 
+
+## Application Interface Preview
+
+Below is a preview of the ViGen Studio interface, showcasing the high-contrast technical schematic dashboard, dynamic prompt configuration, multi-stage pipeline progress visualizer, and togglable light/dark themes:
+
+| 🖥️ Main Dashboard Layout | ⚙️ Dynamic System Prompt Settings |
+|:---:|:---:|
+| ![Main Dashboard](docs/home.png) | ![System Prompt Settings](docs/settings.png) |
+
+| 🔄 Active Job Synthesis / Progress Tracking | 📽️ Completed Build Preview & Live Stage Visualizer |
+|:---:|:---:|
+| ![Active Job Progress](docs/in_progress.png) | ![Completed Video View](docs/view.png) |
+
+| 🌗 Swiss Cream vs. Stark Mono Theme Toggle |
+|:---:|
+| ![Theme Customization](docs/theme.png) |
+
 ## Architecture
+
 
 The project is broken down into a microservices architecture:
 - **UI (Vite/React)**: A web interface to submit prompts and monitor job progress.
