@@ -11,6 +11,6 @@ export interface Job {
 export interface Segment {
   text: string;
   image_prompt: string;
-  code_snippet?: string;
-  code_language?: string;
+  code_snippet?: string | null;
+  code_language?: string | null;
 }

@@ -196,3 +196,61 @@ input.schematic-input:focus {
   50% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(0.9); opacity: 0.5; }
 }
+
+/* Missing Layout Classes */
+.app-container {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 40px 20px;
+  min-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  box-sizing: border-box;
+}
+
+.schematic-header {
+  display: flex; 
+  justify-content: space-between; 
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 20px;
+}
+
+.schematic-title {
+  font-size: 3.5rem;
+  margin: 8px 0 0 0;
+  letter-spacing: -0.5px;
+}
+
+.schematic-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 30px;
+}
+
+.schematic-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.schematic-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  padding: 14px 18px;
+  font-family: 'IBM Plex Mono', monospace;
+  outline: none;
+  font-size: 14px;
+  resize: vertical;
+  transition: all 0.2s;
+  margin-bottom: 15px;
+}
+
+.schematic-textarea:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px rgba(43, 102, 255, 0.15);
+}
+

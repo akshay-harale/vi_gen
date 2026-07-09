@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import './index.css';
-import { Job, Segment } from './types';
+import type { Job, Segment } from './types';
 import { SettingsPanel } from './components/SettingsPanel';
 import { LLMSettingsPanel } from './components/LLMSettingsPanel';
 import { TimelineEditorModal } from './components/TimelineEditorModal';
@@ -37,6 +37,7 @@ function App() {
   const [recompilingJobId, setRecompilingJobId] = useState<string | null>(null);
   const [showSegmentEditor, setShowSegmentEditor] = useState(false);
   const [cacheBuster, setCacheBuster] = useState<Record<string, number>>({});
+  const [addingSegment, setAddingSegment] = useState(false);
 
   // Sync theme to root HTML element
   useEffect(() => {
@@ -242,6 +243,75 @@ function App() {
       alert(`Error saving segment: ${err.message}`);
     } finally {
       setSegmentLoading(prev => ({ ...prev, [idx]: false }));
+    }
+  };
+
+  const handleAddSegment = async () => {
+    if (!activeJob) return;
+    setAddingSegment(true);
+    try {
+      const res = await fetch(`http://localhost:3000/api/jobs/${activeJob.id}/segments/add`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditingSegments(data.segments);
+        // Refresh job details
+        await fetchJobs();
+      } else {
+        alert('Failed to add segment');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error adding segment');
+    } finally {
+      setAddingSegment(false);
+    }
+  };
+
+  const handleInsertSegmentAt = async (idx: number) => {
+    if (!activeJob) return;
+    setAddingSegment(true);
+    try {
+      const res = await fetch(`http://localhost:3000/api/jobs/${activeJob.id}/segments/add-at/${idx}`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditingSegments(data.segments);
+        // Refresh job details
+        await fetchJobs();
+      } else {
+        alert('Failed to insert segment');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error inserting segment');
+    } finally {
+      setAddingSegment(false);
+    }
+  };
+
+  const handleDeleteSegment = async (idx: number) => {
+    if (!activeJob) return;
+    if (!window.confirm(`Are you sure you want to delete Segment ${idx + 1}? This will permanently remove its generated voice and image assets.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`http://localhost:3000/api/jobs/${activeJob.id}/segments/${idx}/delete`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditingSegments(data.segments);
+        // Refresh job details
+        await fetchJobs();
+      } else {
+        alert('Failed to delete segment');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error deleting segment');
     }
   };
 
@@ -707,6 +777,10 @@ function App() {
         recompilingJobId={recompilingJobId}
         handleSaveSegment={handleSaveSegment}
         handleRecompileVideo={handleRecompileVideo}
+        handleDeleteSegment={handleDeleteSegment}
+        handleAddSegment={handleAddSegment}
+        handleInsertSegmentAt={handleInsertSegmentAt}
+        addingSegment={addingSegment}
         cacheBuster={cacheBuster}
       />
 

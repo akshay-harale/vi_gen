@@ -62,6 +62,45 @@ async function init() {
       );
     `);
 
+    // Create segments table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS segments (
+        id SERIAL PRIMARY KEY,
+        job_id VARCHAR(255) REFERENCES jobs(id) ON DELETE CASCADE,
+        segment_index INT NOT NULL,
+        text TEXT NOT NULL,
+        image_prompt TEXT NOT NULL,
+        code_snippet TEXT,
+        code_language VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Migrate existing JSON scripts from jobs table to segments table
+    console.log('Migrating existing script records into segments table...');
+    const jobsRes = await pool.query("SELECT id, script FROM jobs WHERE script IS NOT NULL");
+    for (const job of jobsRes.rows) {
+      const segCountRes = await pool.query("SELECT COUNT(*) FROM segments WHERE job_id = $1", [job.id]);
+      const count = parseInt(segCountRes.rows[0].count, 10);
+      if (count === 0) {
+        try {
+          const segments = JSON.parse(job.script);
+          if (Array.isArray(segments)) {
+            console.log(`Migrating ${segments.length} segments for job ${job.id}...`);
+            for (let i = 0; i < segments.length; i++) {
+              const seg = segments[i];
+              await pool.query(`
+                INSERT INTO segments (job_id, segment_index, text, image_prompt, code_snippet, code_language)
+                VALUES ($1, $2, $3, $4, $5, $6)
+              `, [job.id, i, seg.text || '', seg.image_prompt || '', seg.code_snippet || null, seg.code_language || null]);
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to parse/migrate script for job ${job.id}:`, err.message);
+        }
+      }
+    }
+
     // Seed default system prompt
     await pool.query(`
       INSERT INTO settings (key, value)
