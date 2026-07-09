@@ -21,6 +21,8 @@ services:
     depends_on:
       - redis-queue
       - postgres-db
+    env_file:
+      - .env
     volumes:
       - ./output:/app/output
 
@@ -43,6 +45,8 @@ services:
       - API_URL=http://api-gateway:3000
     depends_on:
       - redis-queue
+    ports:
+      - "5001:5001"
     volumes:
       - ./output:/app/output
 
@@ -64,6 +68,8 @@ services:
     command: node scripts/init_db.js
     environment:
       - DB_URL=postgres://user:pass@postgres-db:5432/videodb
+    env_file:
+      - .env
     depends_on:
       - postgres-db
 

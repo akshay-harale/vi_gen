@@ -69,6 +69,25 @@ async function init() {
       ON CONFLICT (key) DO NOTHING;
     `, [defaultPrompt]);
 
+    // Seed default LLM settings from environment
+    const defaultLLMSettings = [
+      { key: 'llm_provider', value: process.env.LLM_PROVIDER || 'together' },
+      { key: 'llm_model', value: process.env.LLM_MODEL || 'google/gemma-4-31B-it' },
+      { key: 'image_model', value: process.env.IMAGE_MODEL || 'stabilityai/stable-diffusion-xl-base-1.0' },
+      { key: 'together_api_key', value: process.env.TOGETHER_API_KEY || '' },
+      { key: 'openai_api_key', value: process.env.OPENAI_API_KEY || '' },
+      { key: 'ollama_url', value: process.env.OLLAMA_URL || 'http://host.docker.internal:11434' }
+    ];
+
+    for (const setting of defaultLLMSettings) {
+      await pool.query(`
+        INSERT INTO settings (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO NOTHING;
+      `, [setting.key, setting.value]);
+    }
+
+
     console.log('Database schema initialized and seeded successfully.');
   } catch (error) {
     console.error('Error creating tables:', error);

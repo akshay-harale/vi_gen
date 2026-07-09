@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createClient } from 'redis';
 import pg from 'pg';
+import fs from 'fs';
 
 const { Pool } = pg;
 
@@ -94,6 +95,24 @@ async function initDB() {
       VALUES ('system_prompt', $1)
       ON CONFLICT (key) DO NOTHING;
     `, [defaultPrompt]);
+
+    // Seed default LLM settings from environment
+    const defaultLLMSettings = [
+      { key: 'llm_provider', value: process.env.LLM_PROVIDER || 'together' },
+      { key: 'llm_model', value: process.env.LLM_MODEL || 'google/gemma-4-31B-it' },
+      { key: 'image_model', value: process.env.IMAGE_MODEL || 'stabilityai/stable-diffusion-xl-base-1.0' },
+      { key: 'together_api_key', value: process.env.TOGETHER_API_KEY || '' },
+      { key: 'openai_api_key', value: process.env.OPENAI_API_KEY || '' },
+      { key: 'ollama_url', value: process.env.OLLAMA_URL || 'http://host.docker.internal:11434' }
+    ];
+
+    for (const setting of defaultLLMSettings) {
+      await pool.query(`
+        INSERT INTO settings (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO NOTHING;
+      `, [setting.key, setting.value]);
+    }
     
     console.log('Database initialized: jobs and settings tables are ready.');
   } catch (err) {
@@ -129,6 +148,80 @@ app.post('/api/settings/system_prompt', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update system prompt' });
+  }
+});
+
+app.get('/api/settings/llm', async (req, res) => {
+  try {
+    const keys = ['llm_provider', 'llm_model', 'image_model', 'together_api_key', 'openai_api_key', 'ollama_url'];
+    const result = await pool.query("SELECT key, value FROM settings WHERE key = ANY($1)", [keys]);
+    
+    const config = {
+      llm_provider: 'together',
+      llm_model: 'google/gemma-4-31B-it',
+      image_model: 'stabilityai/stable-diffusion-xl-base-1.0',
+      together_api_key: '',
+      openai_api_key: '',
+      ollama_url: 'http://host.docker.internal:11434'
+    };
+
+    result.rows.forEach(row => {
+      config[row.key] = row.value;
+    });
+
+    // Mask secret keys
+    if (config.together_api_key) {
+      config.together_api_key = '__MASKED_SECRET__';
+    }
+    if (config.openai_api_key) {
+      config.openai_api_key = '__MASKED_SECRET__';
+    }
+
+    res.json(config);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch LLM settings' });
+  }
+});
+
+app.post('/api/settings/llm', async (req, res) => {
+  const { llm_provider, llm_model, image_model, together_api_key, openai_api_key, ollama_url } = req.body;
+  
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      if (llm_provider !== undefined) {
+        await client.query("INSERT INTO settings (key, value) VALUES ('llm_provider', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [llm_provider]);
+      }
+      if (llm_model !== undefined) {
+        await client.query("INSERT INTO settings (key, value) VALUES ('llm_model', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [llm_model]);
+      }
+      if (image_model !== undefined) {
+        await client.query("INSERT INTO settings (key, value) VALUES ('image_model', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [image_model]);
+      }
+      if (ollama_url !== undefined) {
+        await client.query("INSERT INTO settings (key, value) VALUES ('ollama_url', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [ollama_url]);
+      }
+      if (together_api_key !== undefined && together_api_key !== '__MASKED_SECRET__') {
+        await client.query("INSERT INTO settings (key, value) VALUES ('together_api_key', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [together_api_key]);
+      }
+      if (openai_api_key !== undefined && openai_api_key !== '__MASKED_SECRET__') {
+        await client.query("INSERT INTO settings (key, value) VALUES ('openai_api_key', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [openai_api_key]);
+      }
+      
+      await client.query('COMMIT');
+      res.json({ success: true });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update LLM settings' });
   }
 });
 
@@ -175,6 +268,133 @@ app.get('/api/jobs/:id', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch job' });
+  }
+});
+
+app.post('/api/jobs/:id/segments/:idx/update', async (req, res) => {
+  const { id, idx } = req.params;
+  const segmentIdx = parseInt(idx, 10);
+  const { text, image_prompt, code_snippet, code_language } = req.body;
+
+  try {
+    const jobRes = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = jobRes.rows[0];
+    if (!job.script) {
+      return res.status(400).json({ error: 'Job script not generated yet' });
+    }
+
+    const segments = JSON.parse(job.script);
+    if (segmentIdx < 0 || segmentIdx >= segments.length) {
+      return res.status(400).json({ error: 'Invalid segment index' });
+    }
+
+    const oldSegment = segments[segmentIdx];
+    const textChanged = oldSegment.text !== text || !fs.existsSync(`/app/output/${id}_${segmentIdx}.wav`);
+    
+    // We only trigger Together AI full image generation if the visual prompt changed or the raw background is missing
+    const imagePromptChanged = oldSegment.image_prompt !== image_prompt || 
+                               !fs.existsSync(`/app/output/${id}_${segmentIdx}_raw.jpg`);
+                               
+    // We trigger code overlay if only the code blocks changed or the final image is missing
+    const codeSnippetChanged = oldSegment.code_snippet !== code_snippet || 
+                               oldSegment.code_language !== code_language ||
+                               !fs.existsSync(`/app/output/${id}_${segmentIdx}.jpg`);
+
+    // Update segment values
+    segments[segmentIdx] = {
+      text,
+      image_prompt,
+      code_snippet,
+      code_language
+    };
+
+    // Save back to DB
+    const updatedScript = JSON.stringify(segments);
+    await pool.query('UPDATE jobs SET script = $1 WHERE id = $2', [updatedScript, id]);
+
+    // Regenerate audio if text changed
+    if (textChanged) {
+      console.log(`[API Gateway] Requesting audio regeneration for segment ${segmentIdx}`);
+      const audioResponse = await fetch('http://video-render-worker:5001/regenerate-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: id, index: segmentIdx, text })
+      });
+      if (!audioResponse.ok) {
+        const errorData = await audioResponse.json().catch(() => ({}));
+        throw new Error(`Worker audio regeneration failed: ${errorData.error || audioResponse.statusText}`);
+      }
+    }
+
+    // Regenerate image or overlay code based on what changed
+    if (imagePromptChanged) {
+      console.log(`[API Gateway] Requesting full image generation & overlay for segment ${segmentIdx}`);
+      const imgResponse = await fetch('http://video-render-worker:5001/regenerate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          job_id: id, 
+          index: segmentIdx, 
+          image_prompt,
+          code_snippet,
+          code_language,
+          only_overlay: false
+        })
+      });
+      if (!imgResponse.ok) {
+        const errorData = await imgResponse.json().catch(() => ({}));
+        throw new Error(`Worker image regeneration failed: ${errorData.error || imgResponse.statusText}`);
+      }
+    } else if (codeSnippetChanged) {
+      console.log(`[API Gateway] Requesting fast code overlay only for segment ${segmentIdx}`);
+      const imgResponse = await fetch('http://video-render-worker:5001/regenerate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          job_id: id, 
+          index: segmentIdx, 
+          image_prompt,
+          code_snippet,
+          code_language,
+          only_overlay: true
+        })
+      });
+      if (!imgResponse.ok) {
+        const errorData = await imgResponse.json().catch(() => ({}));
+        throw new Error(`Worker code overlay failed: ${errorData.error || imgResponse.statusText}`);
+      }
+    }
+
+    res.json({ success: true, segments });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Failed to update segment' });
+  }
+});
+
+app.post('/api/jobs/:id/recompile', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const jobRes = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Push to Redis Queue
+    await redisClient.rPush('job_queue', JSON.stringify({ jobId: id, action: 'recompile' }));
+    
+    // Update status in DB
+    await pool.query("UPDATE jobs SET status = 'PROCESSING' WHERE id = $1", [id]);
+    
+    console.log(`[API Gateway] Queued recompile task for job ${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to queue recompilation' });
   }
 });
 
