@@ -13,7 +13,7 @@ from instagrapi.mixins.challenge import ChallengeChoice
 from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
 from utils import (
     logger, WorkflowState, get_all_settings_from_db, get_system_prompt_from_db, 
-    update_step_status, overlay_code_snippet, LLM_PROVIDER, LLM_MODEL, 
+    update_step_status, overlay_code_snippet, draw_cheatsheet_image, is_job_cancelled, LLM_PROVIDER, LLM_MODEL, 
     OPENAI_API_KEY, TOGETHER_API_KEY, OLLAMA_URL, IMAGE_MODEL, IG_USERNAME, 
     IG_PASSWORD, GMAIL_USERNAME, GMAIL_APP_PASSWORD
 )
@@ -23,6 +23,10 @@ tts_pipeline = KPipeline(lang_code='a')
 
 def generate_script_segments(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
+    if is_job_cancelled(state['job_id']):
+        state["error"] = "CANCELLED"
+        update_step_status(state['job_id'], 'script', 'failed')
+        return state
     if state.get("segments"):
         logger.info(f"[Node: Script] Segments already present, skipping generation")
         update_step_status(state['job_id'], 'script', 'completed')
@@ -153,6 +157,10 @@ Example format:
 
 def generate_audio(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
+    if is_job_cancelled(state['job_id']):
+        state["error"] = "CANCELLED"
+        update_step_status(state['job_id'], 'audio', 'failed')
+        return state
     
     audio_paths = state.get("audio_paths", [])
     if audio_paths and all(os.path.exists(p) for p in audio_paths):
@@ -165,10 +173,19 @@ def generate_audio(state: WorkflowState) -> WorkflowState:
     
     audio_paths = []
     for idx, seg in enumerate(state.get("segments", [])):
+        if is_job_cancelled(state['job_id']):
+            state["error"] = "CANCELLED"
+            break
         text = seg.get("text", "")
         if not text:
             continue
         out_path = f"/app/output/{state['job_id']}_{idx}.wav"
+        
+        # Segment cache check
+        if os.path.exists(out_path):
+            logger.info(f"Audio file {out_path} already exists, skipping")
+            audio_paths.append(out_path)
+            continue
         
         try:
             generator = tts_pipeline(text, voice='af_heart', speed=1)
@@ -190,12 +207,20 @@ def generate_audio(state: WorkflowState) -> WorkflowState:
             update_step_status(state['job_id'], 'audio', 'failed')
             return state
             
+    if state.get("error") == "CANCELLED":
+        update_step_status(state['job_id'], 'audio', 'failed')
+        return state
+        
     state["audio_paths"] = audio_paths
     update_step_status(state['job_id'], 'audio', 'completed')
     return state
 
 def generate_images(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
+    if is_job_cancelled(state['job_id']):
+        state["error"] = "CANCELLED"
+        update_step_status(state['job_id'], 'images', 'failed')
+        return state
     
     image_paths = state.get("image_paths", [])
     if image_paths and all(os.path.exists(p) for p in image_paths):
@@ -218,8 +243,34 @@ def generate_images(state: WorkflowState) -> WorkflowState:
     image_paths = []
     
     for idx, seg in enumerate(state.get("segments", [])):
-        img_prompt = seg.get("image_prompt", "")
+        if is_job_cancelled(state['job_id']):
+            state["error"] = "CANCELLED"
+            break
         out_path = f"/app/output/{state['job_id']}_{idx}.jpg"
+        
+        # Segment cache check
+        if os.path.exists(out_path):
+            logger.info(f"Image file {out_path} already exists, skipping")
+            image_paths.append(out_path)
+            continue
+        
+        # Intercept if cheatsheet segment
+        if seg.get("is_cheatsheet"):
+            logger.info(f"[Node: Images] Segment {idx} is a cheatsheet. Drawing programmatically...")
+            cheatsheet_data = seg.get("cheatsheet_data", {})
+            success = draw_cheatsheet_image(cheatsheet_data, out_path)
+            if not success:
+                raise Exception(f"Failed to generate cheatsheet image for segment {idx}")
+            
+            raw_path = f"/app/output/{state['job_id']}_{idx}_raw.jpg"
+            import shutil
+            shutil.copyfile(out_path, raw_path)
+            
+            image_paths.append(out_path)
+            logger.info(f"[Node: Images] Generated cheatsheet for segment {idx+1}/{len(state.get('segments', []))}")
+            continue
+            
+        img_prompt = seg.get("image_prompt", "")
         try:
             payload = {
                 "prompt": img_prompt,
@@ -272,12 +323,20 @@ def generate_images(state: WorkflowState) -> WorkflowState:
             update_step_status(state['job_id'], 'images', 'failed')
             return state
 
+    if state.get("error") == "CANCELLED":
+        update_step_status(state['job_id'], 'images', 'failed')
+        return state
+
     state["image_paths"] = image_paths
     update_step_status(state['job_id'], 'images', 'completed')
     return state
 
 def compile_video(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
+    if is_job_cancelled(state['job_id']):
+        state["error"] = "CANCELLED"
+        update_step_status(state['job_id'], 'compile', 'failed')
+        return state
     logger.info(f"[Node: Compile] Compiling final video for {state['job_id']}")
     update_step_status(state['job_id'], 'compile', 'processing')
     
@@ -378,6 +437,10 @@ def challenge_code_handler(username, choice):
 
 def upload_to_instagram(state: WorkflowState) -> WorkflowState:
     if state.get("error"): return state
+    if is_job_cancelled(state['job_id']):
+        state["error"] = "CANCELLED"
+        update_step_status(state['job_id'], 'upload', 'failed')
+        return state
     logger.info(f"[Node: Upload] Uploading video to Instagram for {state['job_id']}")
     update_step_status(state['job_id'], 'upload', 'processing')
     

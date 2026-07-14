@@ -43,6 +43,16 @@ Each segment should have:
   VISUAL THEME: The visual aesthetic must represent a clean, high-contrast engineering schematic, 2D technical vector diagram, or blueprint layout (e.g. "A minimal 2D vector blueprint diagram of... crisp white lines on a pure black background, blueprint schematic aesthetics, hardware details, high-contrast technical line art"). Avoid detailed real-world photos, photorealism, and blurry 3D environments.
 - 'code_snippet' (optional): If the segment involves programming concepts, provide the exact code block. IMPORTANT: Code will be displayed on a vertical phone screen. You MUST format the code with short lines (maximum 35 characters per line) by adding line breaks and proper indentation. Keep it under 8 lines total.
 - 'code_language' (optional): The programming language for the code snippet (e.g. "java").
+- 'is_cheatsheet' (optional): If the video topic is related to programming, tech, systems, or architectures, you MUST ALWAYS generate an extra final summary segment at the end of the script as a cheatsheet comparison or feature infographic. For this final segment, set 'is_cheatsheet' to true, 'image_prompt' to empty (""), and provide a structured 'cheatsheet_data' object.
+- 'cheatsheet_data' (optional, required if 'is_cheatsheet' is true): A JSON object containing:
+  - 'title': A short uppercase title of the cheatsheet (e.g. "RUNNABLE VS CALLABLE" or "SPRING AI")
+  - 'subtitle': A brief description (e.g. "Task execution interfaces in Java" or "Build AI-powered apps")
+  - 'columns' (optional, for comparisons): Array of two column names (e.g. ["Runnable", "Callable"])
+  - 'items' (optional, for comparisons): Array of comparative aspect row objects (maximum 5 items):
+    [{"label": "Return Value", "val1": "No return value (void)", "val2": "Returns result (Future<V>)"}, ...]
+  - 'bullets' (optional, for list/features cheatsheets instead of comparison): Array of string features or use-cases (maximum 5 strings).
+  - 'example_code' (optional): A concise relevant example code snippet demonstrating the topic (maximum 8 lines, maximum 35 characters per line with newlines).
+  - 'example_language' (optional): Language of the example code (e.g., "java", "python", "javascript").
 
 IMPORTANT: The images will be generated in a vertical 9:16 aspect ratio. Instruct the image generator to compose the shot vertically.
 
@@ -55,6 +65,23 @@ Example format:
       "image_prompt": "A minimal 2D vector schematic blueprint diagram of a filesystem structure with dark background, crisp white lines...",
       "code_snippet": "List<String> lines =\\n    Files.readAllLines(\\n        Paths.get(\\"file.txt\\")\\n    );",
       "code_language": "java"
+    },
+    {
+      "text": "Here is a quick summary cheatsheet of the key differences. Pause the video to check it out!",
+      "image_prompt": "",
+      "is_cheatsheet": true,
+      "cheatsheet_data": {
+        "title": "RUNNABLE VS CALLABLE",
+        "subtitle": "Task execution interfaces in Java",
+        "columns": ["Runnable", "Callable"],
+        "items": [
+          {"label": "Return Value", "val1": "No return value (void)", "val2": "Returns result (Future<V>)"},
+          {"label": "Exceptions", "val1": "Cannot throw checked", "val2": "Can throw checked"},
+          {"label": "Method", "val1": "run()", "val2": "call()"}
+        ],
+        "example_code": "public class Test {\\n  // Runnable example\\n  public static void main(\\n      String[] args) {\\n  }\\n}",
+        "example_language": "java"
+      }
     }
   ]
 }
@@ -74,12 +101,16 @@ async function initDB() {
     
     // Add columns if missing
     try {
-      await pool.query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script TEXT;`);
-    } catch (e) {}
+      await pool.query('ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script TEXT');
+    } catch (e) {
+      console.log('script column already exists');
+    }
 
     try {
-      await pool.query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_status JSONB;`);
-    } catch (e) {}
+      await pool.query('ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_status JSONB');
+    } catch (e) {
+      console.log('step_status column already exists');
+    }
     
     // Create settings table
     await pool.query(`
@@ -134,7 +165,7 @@ async function initDB() {
     await pool.query(`
       INSERT INTO settings (key, value)
       VALUES ('system_prompt', $1)
-      ON CONFLICT (key) DO NOTHING;
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
     `, [defaultPrompt]);
 
     // Seed default LLM settings from environment
@@ -644,6 +675,47 @@ app.post('/api/jobs/:id/segments/:idx/delete', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Failed to delete segment' });
+  }
+});
+
+app.post('/api/jobs/:id/cancel', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const jobRes = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Update status in PostgreSQL to CANCELLED
+    await pool.query("UPDATE jobs SET status = 'CANCELLED' WHERE id = $1", [id]);
+    
+    console.log(`[API Gateway] Cancelled job ${id}`);
+    res.json({ success: true, status: 'CANCELLED' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to cancel job' });
+  }
+});
+
+app.post('/api/jobs/:id/retry', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const jobRes = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Update status back to PENDING status for retry
+    await pool.query("UPDATE jobs SET status = 'PENDING' WHERE id = $1", [id]);
+
+    // Push to Redis Queue with action "retry"
+    await redisClient.rPush('job_queue', JSON.stringify({ jobId: id, action: 'retry' }));
+    
+    console.log(`[API Gateway] Queued retry task for job ${id}`);
+    res.json({ success: true, status: 'PENDING' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to queue retry task' });
   }
 });
 

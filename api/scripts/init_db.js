@@ -13,6 +13,16 @@ Each segment should have:
   VISUAL THEME: The visual aesthetic must represent a clean, high-contrast engineering schematic, 2D technical vector diagram, or blueprint layout (e.g. "A minimal 2D vector blueprint diagram of... crisp white lines on a pure black background, blueprint schematic aesthetics, hardware details, high-contrast technical line art"). Avoid detailed real-world photos, photorealism, and blurry 3D environments.
 - 'code_snippet' (optional): If the segment involves programming concepts, provide the exact code block. IMPORTANT: Code will be displayed on a vertical phone screen. You MUST format the code with short lines (maximum 35 characters per line) by adding line breaks and proper indentation. Keep it under 8 lines total.
 - 'code_language' (optional): The programming language for the code snippet (e.g. "java").
+- 'is_cheatsheet' (optional): If the video topic is related to programming, tech, systems, or architectures, you MUST ALWAYS generate an extra final summary segment at the end of the script as a cheatsheet comparison or feature infographic. For this final segment, set 'is_cheatsheet' to true, 'image_prompt' to empty (""), and provide a structured 'cheatsheet_data' object.
+- 'cheatsheet_data' (optional, required if 'is_cheatsheet' is true): A JSON object containing:
+  - 'title': A short uppercase title of the cheatsheet (e.g. "RUNNABLE VS CALLABLE" or "SPRING AI")
+  - 'subtitle': A brief description (e.g. "Task execution interfaces in Java" or "Build AI-powered apps")
+  - 'columns' (optional, for comparisons): Array of two column names (e.g. ["Runnable", "Callable"])
+  - 'items' (optional, for comparisons): Array of comparative aspect row objects (maximum 5 items):
+    [{"label": "Return Value", "val1": "No return value (void)", "val2": "Returns result (Future<V>)"}, ...]
+  - 'bullets' (optional, for list/features cheatsheets instead of comparison): Array of string features or use-cases (maximum 5 strings).
+  - 'example_code' (optional): A concise relevant example code snippet demonstrating the topic (maximum 8 lines, maximum 35 characters per line with newlines).
+  - 'example_language' (optional): Language of the example code (e.g., "java", "python", "javascript").
 
 IMPORTANT: The images will be generated in a vertical 9:16 aspect ratio. Instruct the image generator to compose the shot vertically.
 
@@ -25,6 +35,23 @@ Example format:
       "image_prompt": "A minimal 2D vector schematic blueprint diagram of a filesystem structure with dark background, crisp white lines...",
       "code_snippet": "List<String> lines =\\n    Files.readAllLines(\\n        Paths.get(\\"file.txt\\")\\n    );",
       "code_language": "java"
+    },
+    {
+      "text": "Here is a quick summary cheatsheet of the key differences. Pause the video to check it out!",
+      "image_prompt": "",
+      "is_cheatsheet": true,
+      "cheatsheet_data": {
+        "title": "RUNNABLE VS CALLABLE",
+        "subtitle": "Task execution interfaces in Java",
+        "columns": ["Runnable", "Callable"],
+        "items": [
+          {"label": "Return Value", "val1": "No return value (void)", "val2": "Returns result (Future<V>)"},
+          {"label": "Exceptions", "val1": "Cannot throw checked", "val2": "Can throw checked"},
+          {"label": "Method", "val1": "run()", "val2": "call()"}
+        ],
+        "example_code": "public class Test {\\n  // Runnable example\\n  public static void main(\\n      String[] args) {\\n  }\\n}",
+        "example_language": "java"
+      }
     }
   ]
 }
@@ -49,9 +76,9 @@ async function init() {
     
     // Ensure step_status exists for existing tables
     try {
-      await pool.query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_status JSONB;`);
+      await pool.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_status JSONB");
     } catch (e) {
-      console.log('step_status column already exists or ALTER failed:', e.message);
+      console.log("step_status already exists");
     }
 
     // Create settings table
@@ -62,7 +89,7 @@ async function init() {
       );
     `);
 
-    // Create segments table
+    // Ensure segments table exists
     await pool.query(`
       CREATE TABLE IF NOT EXISTS segments (
         id SERIAL PRIMARY KEY,
@@ -76,7 +103,7 @@ async function init() {
       );
     `);
 
-    // Migrate existing JSON scripts from jobs table to segments table
+    // Migrate existing script records into segments table
     console.log('Migrating existing script records into segments table...');
     const jobsRes = await pool.query("SELECT id, script FROM jobs WHERE script IS NOT NULL");
     for (const job of jobsRes.rows) {
@@ -105,7 +132,7 @@ async function init() {
     await pool.query(`
       INSERT INTO settings (key, value)
       VALUES ('system_prompt', $1)
-      ON CONFLICT (key) DO NOTHING;
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
     `, [defaultPrompt]);
 
     // Seed default LLM settings from environment

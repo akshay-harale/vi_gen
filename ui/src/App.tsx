@@ -315,6 +315,38 @@ function App() {
     }
   };
 
+  const handleCancelJob = async () => {
+    if (!activeJob) return;
+    try {
+      const res = await fetch(`http://localhost:3000/api/jobs/${activeJob.id}/cancel`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        await fetchJobs();
+      } else {
+        alert('Failed to cancel job');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleRetryJob = async () => {
+    if (!activeJob) return;
+    try {
+      const res = await fetch(`http://localhost:3000/api/jobs/${activeJob.id}/retry`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        await fetchJobs();
+      } else {
+        alert('Failed to retry job');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleRecompileVideo = async () => {
     if (!activeJob) return;
     setRecompilingJobId(activeJob.id);
@@ -459,6 +491,9 @@ function App() {
                     {job.status === 'FAILED' && (
                       <span className="mono-label" style={{ fontSize: '12px', color: '#ef4444', fontWeight: 'bold' }}>ERROR</span>
                     )}
+                    {job.status === 'CANCELLED' && (
+                      <span className="mono-label" style={{ fontSize: '12px', color: '#999999', fontWeight: 'bold' }}>CANCELLED</span>
+                    )}
                     {job.status === 'COMPLETED' && (
                       <span className="mono-label" style={{ fontSize: '12px', color: activeJob?.id === job.id ? 'var(--bg-color)' : 'var(--accent-color)', fontWeight: 'bold' }}>
                         ACTIVE_BUILD
@@ -513,6 +548,24 @@ function App() {
               >
                 ⚡ OPEN TIMELINE EDITOR
               </button>
+              {(activeJob.status === 'PROCESSING' || activeJob.status === 'PENDING') && (
+                <button 
+                  onClick={handleCancelJob} 
+                  className="btn-schematic" 
+                  style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#ef4444', color: '#ef4444' }}
+                >
+                  ✖ CANCEL
+                </button>
+              )}
+              {(activeJob.status === 'FAILED' || activeJob.status === 'CANCELLED') && (
+                <button 
+                  onClick={handleRetryJob} 
+                  className="btn-schematic accented" 
+                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                >
+                  🔄 RETRY
+                </button>
+              )}
               <button 
                 onClick={() => setActiveJobId(null)} 
                 className="btn-schematic" 

@@ -97,6 +97,80 @@ def main():
                         "output_video_path": "",
                         "error": ""
                     }
+                elif action == "retry":
+                    # Load current step_status from DB
+                    step_status = {}
+                    if job_details.get("step_status"):
+                        try:
+                            step_status = json.loads(job_details.get("step_status"))
+                        except Exception:
+                            step_status = job_details.get("step_status") or {}
+                    
+                    segments = json.loads(script_str) if script_str else []
+                    
+                    # Ensure steps that were cancelled/failed are set back to pending
+                    initial_step_status = {
+                        "script": step_status.get("script", "pending"),
+                        "audio": step_status.get("audio", "pending"),
+                        "images": step_status.get("images", "pending"),
+                        "compile": step_status.get("compile", "pending"),
+                        "upload": step_status.get("upload", "pending")
+                    }
+                    
+                    # If step is completed but its assets do not exist on disk, reset it to pending
+                    if initial_step_status.get("script") == "completed" and not segments:
+                        initial_step_status["script"] = "pending"
+                        
+                    audio_paths = []
+                    if initial_step_status.get("audio") == "completed":
+                        audio_paths = [f"/app/output/{job_id}_{idx}.wav" for idx in range(len(segments))]
+                        if not all(os.path.exists(p) for p in audio_paths):
+                            initial_step_status["audio"] = "pending"
+                            audio_paths = []
+                            
+                    image_paths = []
+                    if initial_step_status.get("images") == "completed":
+                        image_paths = [f"/app/output/{job_id}_{idx}.jpg" for idx in range(len(segments))]
+                        if not all(os.path.exists(p) for p in image_paths):
+                            initial_step_status["images"] = "pending"
+                            image_paths = []
+                            
+                    # Force subsequent steps to pending if a previous one is pending
+                    if initial_step_status["script"] == "pending":
+                        initial_step_status["audio"] = "pending"
+                        initial_step_status["images"] = "pending"
+                        initial_step_status["compile"] = "pending"
+                        initial_step_status["upload"] = "pending"
+                    elif initial_step_status["audio"] == "pending":
+                        initial_step_status["images"] = "pending"
+                        initial_step_status["compile"] = "pending"
+                        initial_step_status["upload"] = "pending"
+                    elif initial_step_status["images"] == "pending":
+                        initial_step_status["compile"] = "pending"
+                        initial_step_status["upload"] = "pending"
+                    elif initial_step_status["compile"] == "pending":
+                        initial_step_status["upload"] = "pending"
+                        
+                    # Update status to PROCESSING and set the corrected step statuses in DB
+                    if conn:
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE jobs SET status = 'PROCESSING', step_status = %s WHERE id = %s",
+                                    (json.dumps(initial_step_status), job_id)
+                                )
+                        except Exception as e:
+                            logger.error(f"Error resetting steps for retry: {e}")
+                            
+                    initial_state = {
+                        "job_id": job_id,
+                        "prompt": prompt,
+                        "segments": segments if initial_step_status.get("script") == "completed" else [],
+                        "audio_paths": audio_paths,
+                        "image_paths": image_paths,
+                        "output_video_path": "",
+                        "error": ""
+                    }
                 else:
                     # Pre-populate all steps as pending
                     initial_step_status = {
@@ -130,10 +204,15 @@ def main():
                 final_state = app.invoke(initial_state)
                 
                 if final_state.get("error"):
-                    logger.error(f"[Worker] Job {job_id} FAILED with error: {final_state['error']}")
-                    script_str = json.dumps(final_state.get("segments", []), indent=2) if final_state.get("segments") else None
-                    video_url = f"/output/{job_id}.mp4" if final_state.get("output_video_path") else None
-                    update_job_status(conn, job_id, "FAILED", script=script_str, video_url=video_url)
+                    if final_state.get("error") == "CANCELLED":
+                        logger.warning(f"[Worker] Job {job_id} was CANCELLED by user.")
+                        script_str = json.dumps(final_state.get("segments", []), indent=2) if final_state.get("segments") else None
+                        update_job_status(conn, job_id, "CANCELLED", script=script_str)
+                    else:
+                        logger.error(f"[Worker] Job {job_id} FAILED with error: {final_state['error']}")
+                        script_str = json.dumps(final_state.get("segments", []), indent=2) if final_state.get("segments") else None
+                        video_url = f"/output/{job_id}.mp4" if final_state.get("output_video_path") else None
+                        update_job_status(conn, job_id, "FAILED", script=script_str, video_url=video_url)
                 else:
                     logger.info(f"[Worker] Completed job {job_id}")
                     # Convert JSON segments back to string for DB

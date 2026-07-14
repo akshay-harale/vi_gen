@@ -1,7 +1,7 @@
 export interface Job {
   id: string;
   prompt: string;
-  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
   created_at: string;
   script?: string;
   video_url?: string;
@@ -13,4 +13,6 @@ export interface Segment {
   image_prompt: string;
   code_snippet?: string | null;
   code_language?: string | null;
+  is_cheatsheet?: boolean;
+  cheatsheet_data?: any;
 }

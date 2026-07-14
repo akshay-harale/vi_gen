@@ -34,6 +34,20 @@ export const TimelineEditorModal: React.FC<TimelineEditorModalProps> = ({
   addingSegment,
   cacheBuster
 }) => {
+  const [jsonTexts, setJsonTexts] = React.useState<Record<number, string>>({});
+
+  React.useEffect(() => {
+    if (isOpen) {
+      const initial: Record<number, string> = {};
+      editingSegments.forEach((seg, i) => {
+        if (seg.is_cheatsheet) {
+          initial[i] = JSON.stringify(seg.cheatsheet_data || {}, null, 2);
+        }
+      });
+      setJsonTexts(initial);
+    }
+  }, [isOpen, editingSegments.length]);
+
   if (!isOpen || !activeJob) return null;
 
   return (
@@ -125,6 +139,11 @@ export const TimelineEditorModal: React.FC<TimelineEditorModalProps> = ({
                           [CODE OVERLAY: {seg.code_language || 'text'}]
                         </span>
                       )}
+                      {seg.is_cheatsheet && (
+                        <span className="mono-label" style={{ fontSize: '11px', color: '#2b66ff' }}>
+                          [PROGRAMMATIC CHEATSHEET SLIDE]
+                        </span>
+                      )}
                     </div>
                     
                     <div style={{ display: 'flex', gap: '10px' }}>
@@ -156,7 +175,7 @@ export const TimelineEditorModal: React.FC<TimelineEditorModalProps> = ({
                         <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>NARRATION SCRIPT (AUDIO TEXT)</span>
                       </div>
                       <textarea
-                        rows={6}
+                        rows={8}
                         value={seg.text || ''}
                         onChange={(e) => {
                           const updated = [...editingSegments];
@@ -187,32 +206,103 @@ export const TimelineEditorModal: React.FC<TimelineEditorModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Right: Visual Prompt / Image */}
+                    {/* Right: Visual Prompt / Cheatsheet Config */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>VISUAL SCHEMATIC PROMPT (IMAGE GENERATION)</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                        <input
+                          type="checkbox"
+                          id={`is_cheatsheet_${idx}`}
+                          checked={!!seg.is_cheatsheet}
+                          onChange={(e) => {
+                            const val = e.target.checked;
+                            const updated = [...editingSegments];
+                            updated[idx].is_cheatsheet = val;
+                            if (val) {
+                              updated[idx].image_prompt = "";
+                              updated[idx].cheatsheet_data = updated[idx].cheatsheet_data || {
+                                title: "SUMMARY",
+                                subtitle: "Key takeaways",
+                                bullets: [
+                                  "Key feature or point one.",
+                                  "Key feature or point two."
+                                ]
+                              };
+                              setJsonTexts(prev => ({ ...prev, [idx]: JSON.stringify(updated[idx].cheatsheet_data, null, 2) }));
+                            }
+                            setEditingSegments(updated);
+                          }}
+                        />
+                        <label htmlFor={`is_cheatsheet_${idx}`} className="mono-label" style={{ cursor: 'pointer', fontSize: '11px', color: 'var(--accent-color)' }}>
+                          IS CHEATSHEET SUMMARY SLIDE (PROGRAMMATIC GRID / BULLETS)
+                        </label>
                       </div>
-                      <textarea
-                        rows={6}
-                        value={seg.image_prompt || ''}
-                        onChange={(e) => {
-                          const updated = [...editingSegments];
-                          updated[idx].image_prompt = e.target.value;
-                          setEditingSegments(updated);
-                        }}
-                        style={{ 
-                          width: '100%', 
-                          background: 'transparent', 
-                          color: 'var(--text-color)', 
-                          border: '1px solid var(--border-color)', 
-                          padding: '12px', 
-                          fontFamily: 'IBM Plex Mono, monospace', 
-                          fontSize: '12px',
-                          outline: 'none',
-                          resize: 'vertical',
-                          lineHeight: '1.5'
-                        }}
-                      />
+
+                      {seg.is_cheatsheet ? (
+                        <>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>CHEATSHEET CONFIGURATION (JSON)</span>
+                          </div>
+                          <textarea
+                            rows={8}
+                            value={jsonTexts[idx] !== undefined ? jsonTexts[idx] : JSON.stringify(seg.cheatsheet_data || {}, null, 2)}
+                            onChange={(e) => {
+                              const text = e.target.value;
+                              setJsonTexts(prev => ({ ...prev, [idx]: text }));
+                              try {
+                                const parsed = JSON.parse(text);
+                                const updated = [...editingSegments];
+                                updated[idx].cheatsheet_data = parsed;
+                                setEditingSegments(updated);
+                              } catch (err) {
+                                // Ignore active parsing errors
+                              }
+                            }}
+                            placeholder='{ "title": "MY CHEATSHEET", "subtitle": "Description", "bullets": ["Item 1"] }'
+                            style={{ 
+                              width: '100%', 
+                              background: 'transparent', 
+                              color: 'var(--text-color)', 
+                              border: '1px solid var(--border-color)', 
+                              padding: '12px', 
+                              fontFamily: 'IBM Plex Mono, monospace', 
+                              fontSize: '12px',
+                              outline: 'none',
+                              resize: 'vertical',
+                              lineHeight: '1.4'
+                            }}
+                          />
+                          <p style={{ margin: 0, fontSize: '10px', opacity: 0.5, lineHeight: '1.4', fontFamily: 'IBM Plex Mono, monospace' }}>
+                            {"💡 Schema supports: comparison grids (e.g. columns: [\"Left\", \"Right\"] & items: [{\"label\": \"Aspect\", \"val1\": \"LeftVal\", \"val2\": \"RightVal\"}]) OR a list of points (bullets: [\"Text...\"])."}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>VISUAL SCHEMATIC PROMPT (IMAGE GENERATION)</span>
+                          </div>
+                          <textarea
+                            rows={8}
+                            value={seg.image_prompt || ''}
+                            onChange={(e) => {
+                              const updated = [...editingSegments];
+                              updated[idx].image_prompt = e.target.value;
+                              setEditingSegments(updated);
+                            }}
+                            style={{ 
+                              width: '100%', 
+                              background: 'transparent', 
+                              color: 'var(--text-color)', 
+                              border: '1px solid var(--border-color)', 
+                              padding: '12px', 
+                              fontFamily: 'IBM Plex Mono, monospace', 
+                              fontSize: '12px',
+                              outline: 'none',
+                              resize: 'vertical',
+                              lineHeight: '1.5'
+                            }}
+                          />
+                        </>
+                      )}
                       
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
                         <span className="mono-label" style={{ fontSize: '10px', opacity: 0.4 }}>SCHEMATIC IMAGE RENDER PREVIEW:</span>
@@ -242,106 +332,108 @@ export const TimelineEditorModal: React.FC<TimelineEditorModalProps> = ({
                   </div>
 
                   {/* Optional Code Snippet Overlay Row */}
-                  {hasCode ? (
-                    <div style={{ 
-                      borderTop: '1px dashed var(--border-color)', 
-                      paddingTop: '16px',
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 1fr',
-                      gap: '24px'
-                    }}>
-                      {/* Code Snippet Textarea */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>CODE OVERLAY SNIPPET</span>
-                        <textarea
-                          rows={5}
-                          value={seg.code_snippet || ''}
-                          onChange={(e) => {
-                            const updated = [...editingSegments];
-                            updated[idx].code_snippet = e.target.value;
-                            setEditingSegments(updated);
-                          }}
-                          placeholder="Type code snippet here... (max 35 chars per line)"
-                          style={{ 
-                            width: '100%', 
-                            background: 'transparent', 
-                            color: 'var(--text-color)', 
-                            border: '1px solid var(--border-color)', 
-                            padding: '12px', 
-                            fontFamily: 'IBM Plex Mono, monospace', 
-                            fontSize: '12px',
-                            outline: 'none',
-                            resize: 'vertical',
-                            lineHeight: '1.4'
-                          }}
-                        />
-                      </div>
+                  {!seg.is_cheatsheet && (
+                    hasCode ? (
+                      <div style={{ 
+                        borderTop: '1px dashed var(--border-color)', 
+                        paddingTop: '16px',
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: '24px'
+                      }}>
+                        {/* Code Snippet Textarea */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>CODE OVERLAY SNIPPET</span>
+                          <textarea
+                            rows={5}
+                            value={seg.code_snippet || ''}
+                            onChange={(e) => {
+                              const updated = [...editingSegments];
+                              updated[idx].code_snippet = e.target.value;
+                              setEditingSegments(updated);
+                            }}
+                            placeholder="Type code snippet here... (max 35 chars per line)"
+                            style={{ 
+                              width: '100%', 
+                              background: 'transparent', 
+                              color: 'var(--text-color)', 
+                              border: '1px solid var(--border-color)', 
+                              padding: '12px', 
+                              fontFamily: 'IBM Plex Mono, monospace', 
+                              fontSize: '12px',
+                              outline: 'none',
+                              resize: 'vertical',
+                              lineHeight: '1.4'
+                            }}
+                          />
+                        </div>
 
-                      {/* Code Language Input */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>CODE SYNTAX LANGUAGE</span>
-                        <input
-                          type="text"
-                          value={seg.code_language || ''}
-                          onChange={(e) => {
-                            const updated = [...editingSegments];
-                            updated[idx].code_language = e.target.value;
-                            setEditingSegments(updated);
-                          }}
-                          placeholder="e.g. java, python, javascript, text"
-                          className="schematic-input"
-                          style={{ width: '100%' }}
-                        />
-                        <p style={{ margin: 0, fontSize: '11px', opacity: 0.4, lineHeight: '1.4' }}>
-                          Changing only the code snippet or syntax language will run a super-fast local graphics update on the existing schematic background, bypassing Together AI image model generation completely.
-                        </p>
+                        {/* Code Language Input */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          <span className="mono-label" style={{ fontSize: '11px', opacity: 0.6 }}>CODE SYNTAX LANGUAGE</span>
+                          <input
+                            type="text"
+                            value={seg.code_language || ''}
+                            onChange={(e) => {
+                              const updated = [...editingSegments];
+                              updated[idx].code_language = e.target.value;
+                              setEditingSegments(updated);
+                            }}
+                            placeholder="e.g. java, python, javascript, text"
+                            className="schematic-input"
+                            style={{ width: '100%' }}
+                          />
+                          <p style={{ margin: 0, fontSize: '11px', opacity: 0.4, lineHeight: '1.4' }}>
+                            Changing only the code snippet or syntax language will run a super-fast local graphics update on the existing schematic background, bypassing Together AI image model generation completely.
+                          </p>
+                          <button
+                            onClick={() => {
+                              const updated = [...editingSegments];
+                              updated[idx].code_snippet = null;
+                              updated[idx].code_language = null;
+                              setEditingSegments(updated);
+                            }}
+                            className="btn-schematic"
+                            style={{ padding: '6px 12px', fontSize: '11px', color: '#ef4444', borderColor: '#ef4444', marginTop: '10px', width: 'fit-content' }}
+                          >
+                            - DISABLE CODE OVERLAY
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ 
+                        borderTop: '1px dashed var(--border-color)', 
+                        paddingTop: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        alignItems: 'flex-start'
+                      }}>
                         <button
                           onClick={() => {
                             const updated = [...editingSegments];
-                            updated[idx].code_snippet = null;
-                            updated[idx].code_language = null;
+                            updated[idx].code_snippet = "";
+                            updated[idx].code_language = "text";
                             setEditingSegments(updated);
                           }}
                           className="btn-schematic"
-                          style={{ padding: '6px 12px', fontSize: '11px', color: '#ef4444', borderColor: '#ef4444', marginTop: '10px', width: 'fit-content' }}
+                          style={{ padding: '8px 16px', fontSize: '11px' }}
                         >
-                          - DISABLE CODE OVERLAY
-                      </button>
+                          + ENABLE CODE SNIPPET OVERLAY
+                        </button>
+                        <div style={{ 
+                          fontSize: '11px', 
+                          opacity: 0.6, 
+                          fontFamily: 'IBM Plex Mono, monospace', 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '6px',
+                          marginTop: '4px'
+                        }}>
+                          <span>💡 <strong>HELP TIP:</strong> Turn on code overlay to display technical source code blocks on top of the visual schematic image for this segment.</span>
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div style={{ 
-                      borderTop: '1px dashed var(--border-color)', 
-                      paddingTop: '16px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '8px',
-                      alignItems: 'flex-start'
-                    }}>
-                      <button
-                        onClick={() => {
-                          const updated = [...editingSegments];
-                          updated[idx].code_snippet = "";
-                          updated[idx].code_language = "text";
-                          setEditingSegments(updated);
-                        }}
-                        className="btn-schematic"
-                        style={{ padding: '8px 16px', fontSize: '11px' }}
-                      >
-                        + ENABLE CODE SNIPPET OVERLAY
-                      </button>
-                      <div style={{ 
-                        fontSize: '11px', 
-                        opacity: 0.6, 
-                        fontFamily: 'IBM Plex Mono, monospace', 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        gap: '6px',
-                        marginTop: '4px'
-                      }}>
-                        <span>💡 <strong>HELP TIP:</strong> Turn on code overlay to display technical source code blocks on top of the visual schematic image for this segment.</span>
-                      </div>
-                    </div>
+                    )
                   )}
 
                 </div>
